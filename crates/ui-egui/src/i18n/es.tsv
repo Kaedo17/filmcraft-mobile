@@ -3610,3 +3610,13 @@
 	Shows the version, community links and credits in a FilmCraft window.	Muestra la versión, los enlaces de la comunidad y los créditos en una ventana de FilmCraft.
 	Couldn't open your web browser	No se pudo abrir el navegador web
 	Open this address in your browser yourself:	Abre esta dirección tú mismo en el navegador:
+	A file with this name already exists: {name}	Ya existe un archivo con este nombre: {name}
+	Choose	Elegir
+	Choose Folder	Elegir carpeta
+	Could not create the folder: {error}	No se pudo crear la carpeta: {error}
+	Create	Crear
+	New Folder	Nueva carpeta
+	No saved projects yet.	Aún no hay proyectos guardados.
+	Nothing here.	No hay nada aquí.
+	Select at least one file.	Selecciona al menos un archivo.
+	This folder can't be read.	No se puede leer esta carpeta.

@@ -159,6 +159,13 @@ pub struct HostHooks {
     /// running while the dialog is open (the desktop app on Linux, #260); without it the
     /// synchronous pickers above are used.
     pub run_dialog: Option<Box<dyn FnMut(native_dialogs::FileDialog) -> Receiver<Vec<String>>>>,
+    /// The storage directory the host offers the app (the Android build's
+    /// `AndroidApp::internal_data_path`): with it, every [`native_dialogs::FileDialog`] is served
+    /// by FilmCraft's own in-app browser ([`crate::panels::android_file`]) instead of the pickers
+    /// above, which have no Android backend. It is the root the browser may never leave, and the
+    /// folder saves, opens and exports default to (`Projects/`, `Exports/` beneath it). Desktop
+    /// and web hosts leave it `None` and keep their system pickers.
+    pub app_files_dir: Option<std::path::PathBuf>,
     /// Open a URL in the system browser (Help menu links, About dialog, Discord button, Import
     /// screen). Without it, or when it fails, links go through `egui::Context::open_url`, which
     /// opens a new tab on the web (the native egui backend is built without its `links` feature).

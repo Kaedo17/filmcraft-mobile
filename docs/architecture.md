@@ -79,10 +79,10 @@ and `filmcraft-cli`.
 | `ui-egui` | L5 | the egui frontend: docking, panels, timeline, monitors, playback, control-channel handlers |
 | `automation` | L5 | MCP server (`rmcp`, stdio), headless or bridged to the running app |
 | `platform` | L5 | OS media FFI only: hardware video decoding (VideoToolbox H.264 / HEVC on macOS; Media Foundation / Direct3D 11 H.264 / HEVC / VP9 / AV1 on Windows; VA-API H.264 / HEVC on Linux, with our own parsers and DPBs driving the stateless hardware; a no-op elsewhere) behind `codecs::VideoDecoder`, with transparent fallback to our decoders, and hardware H.264 encoding (VideoToolbox, opt-in) and H.265 encoding (VideoToolbox, the only H.265 encoder; the format exists only where a hardware encoder does) and NVIDIA NVENC H.264 (Windows and 64-bit Linux, opt-in) and H.265 (Windows, FilmCraft's only H.265 encoder there) encoding behind `export::VideoEncoder`; H.264 declines to the built-in encoder for what the hardware does not take. The one crate allowed `unsafe` ([ADR 0001](adr/0001-platform-ffi.md), [README](../crates/platform/README.md)) |
-| `filmcraft` | L6 | desktop app (library + binary): eframe/wgpu window, cpal audio output, file dialogs, native macOS menu, TCP control server; Android's NativeActivity entry opens the same library |
+| `filmcraft` | L6 | desktop app (library + binary): eframe/wgpu window, cpal audio output, file dialogs (the system picker; FilmCraft's own browser where a host offers storage instead — see below), native macOS menu, TCP control server; Android's NativeActivity entry opens the same library |
 | `filmcraft-cli` | L6 | headless CLI: `exec`, `run`, `inspect`, `describe`, `commands`, `import`, `export`, `render`, `probe`, `mcp`; `--bridge` targets the running app |
 | `filmcraft-web` | L6 | the browser app (wasm32): eframe web runner on WebGPU/WebGL2, Blob-backed services, OPFS recovery, WebAudio, WebCodecs, `window.filmcraft` API ([web.md](web.md)) |
-| `filmcraft-android` | L6 | Android's NativeActivity entry trampoline (arm64 APK, `cargo apk`): the unmangled `android_main` that hands the activity handle to `filmcraft::run_android` |
+| `filmcraft-android` | L6 | Android's NativeActivity entry trampoline (arm64 APK, `cargo apk`): the unmangled `android_main` that hands the activity handle to `filmcraft::run_android`, plus the `res/` tree with the launcher icon |
 
 ### What `cargo xtask layers` enforces
 
@@ -106,6 +106,36 @@ not inherit the workspace lints at all: `filmcraft-android` sets the workspace's
 itself and leaves `unsafe_code` alone, because Android's NativeActivity ABI requires an unmangled
 `android_main` and edition 2024 spells that `#[unsafe(no_mangle)]` — there is no safe spelling of a
 required export symbol. That crate contains no unsafe code.
+
+### What the Android build changes
+
+`filmcraft-android` is only the entry point; every other difference is the host telling the shared
+app what it has, not a `cfg` inside the panels:
+
+| Host | Behaviour |
+|---|---|
+| `HostHooks::app_files_dir` set (Android) | rfd has no backend there, so *every* file dialog — Save, Save As, Open Project, imports, exports, folder picks, relink — is served by [android_file.rs](../crates/ui-egui/src/panels/android_file.rs), FilmCraft's own browser. It opens on the frame the command asks, answers over the same channel a non-blocking host dialog uses (so the command continues on a later frame), and never leaves the directory it was given. |
+| unset (desktop, web) | the system picker as before (`rfd`, or the File System Access API in the browser), unchanged. |
+
+The directory is Android's app-private `internal_data_path`, split once by
+`apps/filmcraft/src/android_storage.rs`:
+
+```text
+<files>/Projects/   saves and projects (Save / Save As, the Open Project list)
+<files>/Exports/    renders and stills: `Session.export_dir`, which `default_export_dir` consults
+                    first — `/` is the working directory on a phone, `HOME` and the temp dir are
+                    unset, so no other fallback lands somewhere writable
+<files>/config/     the data root: settings, auto-save, recovery, logs
+```
+
+Nothing outside `<files>` is reachable, so the manifest asks for no storage permission at all.
+Reaching shared storage would need "All files access", which an app can only grant on the system
+settings page (a JNI call this workspace does not allow yet) — it is not declared either.
+
+The launcher icon comes from `apps/filmcraft-android/res/mipmap-<density>/ic_launcher.png`
+(`@mipmap/ic_launcher`), regenerated from `filmcraft.svg` by `packaging/icons.sh`; because `aapt -S`
+rejects a second resource name in a directory, those five PNGs are the only assets in the repository
+whose attribution sidecar is dot-prefixed (`xtask::ANDROID_RES`).
 
 ## 2. Time base
 

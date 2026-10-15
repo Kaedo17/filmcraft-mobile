@@ -29,6 +29,9 @@
 //! empty and the commands' dialogs are served by FilmCraft's own in-app browser instead.
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
+/// Android's app-private storage (`Projects/`, `Exports/`, `config/`): pure path logic, the
+/// layout `run_inner` picks the session's data root from and the browser's root comes from.
+mod android_storage;
 mod app_nap;
 mod appearance;
 mod args;
@@ -144,11 +147,28 @@ fn run_inner(#[cfg(target_os = "android")] android_app: Option<android_activity:
         dir
     });
     let data_root = launch.data_dir.clone().or_else(default_data_dir);
+    // Android has no per-user data folder to resolve (no HOME, no XDG there): the activity's
+    // app-private directory is split by `android_storage` into Projects/ (projects), Exports/
+    // (renders and stills) and config/ — this root, so settings, auto-save, recovery and logs
+    // live in `config/` with the two folders the in-app browser offers beside it.
     #[cfg(target_os = "android")]
-    let data_root = data_root.or_else(|| android_files.clone());
+    let data_root = data_root.or_else(|| {
+        let layout = android_storage::layout(android_files.as_deref()?);
+        if let Err(e) = android_storage::ensure(&layout) {
+            // keep going: each dialog and command reports its own error for a folder it lacks
+            log::warn!("android storage: {e}");
+        }
+        Some(layout.config)
+    });
     // The resolved root is what `app_creator` builds the session's auto-save and settings from,
     // so Android's app-private directory reaches them exactly like `--data-dir` does.
     launch.data_dir = data_root.clone();
+    // The layout the session and the browser work in: the split above on Android, and none
+    // anywhere else (their pickers point at the real filesystem, as before).
+    #[cfg(target_os = "android")]
+    let storage = android_files.as_deref().map(android_storage::layout);
+    #[cfg(not(target_os = "android"))]
+    let storage: Option<android_storage::Layout> = None;
     let log_dir = data_root.as_ref().map(|d| d.join(logging::LOG_DIR));
     log::info!("FilmCraft {} ({} {})", env!("CARGO_PKG_VERSION"), std::env::consts::OS, std::env::consts::ARCH);
     // The log file lives next to the crash logs; opened after the arguments, so `--help`,
@@ -193,7 +213,7 @@ fn run_inner(#[cfg(target_os = "android")] android_app: Option<android_activity:
         // Before eframe creates the wgpu instance (e.g. no OpenGL on Windows, see graphics.rs).
         graphics::apply(&mut options, graphics.mode(), backend_override);
         let app_created = Arc::new(AtomicBool::new(false));
-        let result = eframe::run_native("FilmCraft", options, app_creator(launch.clone(), graphics.clone(), Arc::clone(&app_created)));
+        let result = eframe::run_native("FilmCraft", options, app_creator(launch.clone(), graphics.clone(), Arc::clone(&app_created), storage.clone()));
         let app_created = app_created.load(Ordering::Relaxed);
         match &result {
             // wgpu reported the failure (no adapter, device creation failed) before the app
@@ -249,7 +269,15 @@ fn native_options(agent: bool) -> eframe::NativeOptions {
 
 /// Creates the app once eframe has its window and graphics device; sets `created` when it runs,
 /// and confirms the graphics mode once two frames have painted.
-fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<AtomicBool>) -> eframe::AppCreator<'static> {
+/// `storage` is the Android layout (`run_inner` split the app-private directory there, `None`
+/// on the desktop): renders go to its `Exports/` folder and the in-app file browser reaches the
+/// whole of it from its root.
+fn app_creator(
+    launch: Launch,
+    graphics: graphics::GraphicsStart,
+    created: Arc<AtomicBool>,
+    storage: Option<android_storage::Layout>,
+) -> eframe::AppCreator<'static> {
     let Launch { control_port, control_input_only, files, demo, startup_flag, recover, data_dir, graphics: _ } = launch;
     Box::new(move |cc| {
         created.store(true, Ordering::Relaxed);
@@ -274,6 +302,14 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
             if let Err(e) = session.start_autosave(cfg) {
                 log::warn!("auto-save and crash recovery unavailable: {e}");
             }
+        }
+        // Where renders land when the host named a folder for them (the Android build): `/` is
+        // the working directory on a phone, `HOME` is unset and there is no temp dir, so none of
+        // `default_export_dir`'s other fallbacks resolves somewhere writable.
+        if let Some(s) = storage.as_ref()
+            && session.export_dir.is_none()
+        {
+            session.export_dir = Some(s.exports.clone());
         }
         // voice-over recording reads the microphone through cpal
         session.voiceover.input = Some(Box::new(audio_in::CpalIn::new(&session.prefs.audio_hardware.device_class)));
@@ -399,6 +435,12 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
             app.hooks.open_url = Some(Box::new(|_: &str| Err("no browser on Android (yet)".into())));
             app.hooks.open_path = Some(Box::new(|path: &str, _reveal: bool| Err(format!("FilmCraft can't open {path} on Android (yet)"))));
         }
+        // FilmCraft's own file browser serves every dialog when the host offers its storage
+        // directory instead of a system picker (the Android build, which has no rfd backend):
+        // its root is the app-private directory below `Projects/` and `Exports/`, and it never
+        // answers with anything outside it. `None` here (the desktop and the web) keeps the
+        // system pickers above exactly as they are.
+        app.hooks.app_files_dir = storage.as_ref().map(|s| s.base.clone());
         #[cfg(not(target_os = "android"))]
         {
             app.hooks.open_path = Some(Box::new(open_path));
