@@ -39,6 +39,11 @@ android-activity = { version = "0.6", default-features = false, features = ["nat
 package = "ai.storyteller.filmcraft"
 apk_name = "filmcraft"
 build_targets = ["aarch64-linux-android"]
+# The launcher icon: `res/mipmap-<density>/ic_launcher.png`, regenerated from the app's own
+# filmcraft.svg by packaging/icons.sh (each PNG carries a dot-prefixed attribution sidecar, the
+# one spelling `aapt -S` accepts). cargo-apk runs `aapt package -S res`, which is what turns these
+# into the APK's @mipmap/ic_launcher.
+resources = "res"
 
 # "All files access" (`MANAGE_EXTERNAL_STORAGE`): lets the in-app file browser reach shared
 # storage (`/storage/emulated/0`) so a save, export or import can land outside the app-private
@@ -53,6 +58,7 @@ target_sdk_version = 35
 [package.metadata.android.application]
 label = "FilmCraft"
 theme = "@android:style/Theme.DeviceDefault.NoActionBar.Fullscreen"
+icon = "@mipmap/ic_launcher"
 
 [package.metadata.android.application.activity]
 config_changes = "orientation|keyboardHidden|screenSize|screenLayout|smallestScreenSize|density|layoutDirection"
