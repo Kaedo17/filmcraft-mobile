@@ -1,5 +1,6 @@
-//! FilmCraft app library: the window, hooks and launch logic, so the desktop binary (`main.rs`) is
-//! a shim whose `main` calls [`run`], and another host can open the same app.
+//! FilmCraft app library: the window, hooks and launch logic shared by the desktop binary
+//! (`main.rs`, whose `main` calls [`run`]) and Android's NativeActivity entry point
+//! (`apps/filmcraft-android`, whose `android_main` calls [`run_android`]).
 //!
 //! Usage: `filmcraft [--control <port>] [--demo|--empty] [--recover|--no-recover] [--data-dir <dir>]
 //! [project.fcproj | media files…]`; `--help` prints the options, `--version` the version. An
@@ -86,7 +87,7 @@ fn tell(text: &str, error: bool) {
 }
 
 /// Open the window and run the app until its window closes. The desktop binary calls this from
-/// `main`; Android's NativeActivity entry point calls `run_android` from `android_main`.
+/// `main`; Android's NativeActivity entry point calls [`run_android`] from `android_main`.
 pub fn run() -> eframe::Result {
     #[cfg(target_os = "android")]
     {

@@ -8,7 +8,7 @@ default-run = "filmcraft"
 build = "build.rs"
 
 [lib]
-# The desktop binary is a shim over this library (and other hosts can open the same app).
+# The desktop binary and Android's entry shim (apps/filmcraft-android) share this library.
 crate-type = ["rlib"]
 
 [lints]

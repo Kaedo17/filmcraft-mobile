@@ -1730,6 +1730,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "filmcraft-android"
+version = "0.8.0"
+dependencies = [
+ "android-activity",
+ "filmcraft",
+ "log",
+]
+
+[[package]]
 name = "filmcraft-apv"
 version = "0.10.0"
 dependencies = [
