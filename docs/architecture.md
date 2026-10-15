@@ -105,7 +105,10 @@ egui UI and the web app, so everything up to the engine stays web-portable and t
 not inherit the workspace lints at all: `filmcraft-android` sets the workspace's clippy denials
 itself and leaves `unsafe_code` alone, because Android's NativeActivity ABI requires an unmangled
 `android_main` and edition 2024 spells that `#[unsafe(no_mangle)]` — there is no safe spelling of a
-required export symbol. That crate contains no unsafe code.
+required export symbol. One file inside it, `android_access.rs`, now holds the workspace's only
+other `unsafe`: the JNI to the activity's JVM that checks and opens Android's "All files access"
+grant, named as the second exception by AGENTS.md §0.3 — on the same terms as `platform` (a safe
+API out, pointers never leaving the file, every failure degrading to "not granted").
 
 ## 2. Time base
 
