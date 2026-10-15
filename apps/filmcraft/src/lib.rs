@@ -1,4 +1,6 @@
-//! FilmCraft desktop app.
+//! FilmCraft app library: the window, hooks and launch logic shared by the desktop binary
+//! (`main.rs`, whose `main` calls [`run`]) and Android's NativeActivity entry point
+//! (`apps/filmcraft-android`, whose `android_main` calls [`run_android`]).
 //!
 //! Usage: `filmcraft [--control <port>] [--demo|--empty] [--recover|--no-recover] [--data-dir <dir>]
 //! [project.fcproj | media files…]`; `--help` prints the options, `--version` the version. An
@@ -19,7 +21,12 @@
 //!
 //! `log` records go to standard error and `<data dir>/Logs/filmcraft.log` (`RUST_LOG` sets the
 //! levels); see [`logging`].
-#![cfg_attr(all(target_os = "windows", not(debug_assertions)), windows_subsystem = "windows")]
+//!
+//! On Android there are no command-line arguments and no per-user data folder to resolve
+//! (`FILMCRAFT_DATA_DIR`, XDG, `HOME`): the app-private storage directory the activity hands us
+//! (`AndroidApp::internal_data_path`) is the data root, so logs, auto-save and recovery live
+//! there. rfd has no Android backend (it does not compile for the target), so the file hooks stay
+//! empty and the commands' dialogs are served by FilmCraft's own in-app browser instead.
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
 mod app_nap;
@@ -30,6 +37,9 @@ mod audio_in;
 mod control_server;
 #[cfg(target_os = "linux")]
 mod dev_icon;
+// Extension patterns for rfd's dialogs only: no rfd on Android, and the in-app browser there
+// matches extensions itself.
+#[cfg(not(target_os = "android"))]
 mod file_filters;
 mod graphics;
 mod logging;
@@ -76,12 +86,37 @@ fn tell(text: &str, error: bool) {
     }
 }
 
-fn main() -> eframe::Result {
+/// Open the window and run the app until its window closes. The desktop binary calls this from
+/// `main`; Android's NativeActivity entry point calls [`run_android`] from `android_main`.
+pub fn run() -> eframe::Result {
+    #[cfg(target_os = "android")]
+    {
+        run_inner(None)
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        run_inner()
+    }
+}
+
+/// Android entry point: like [`run`], but with the activity's handle, which eframe's event loop
+/// cannot be created without — leaving it out ends the activity as soon as it starts — and which
+/// resolves the app-private storage the session's logs, auto-save and settings live in.
+#[cfg(target_os = "android")]
+pub fn run_android(android_app: android_activity::AndroidApp) -> eframe::Result {
+    run_inner(Some(android_app))
+}
+
+/// Shared startup; `android_app` is the NativeActivity handle eframe needs on Android.
+fn run_inner(#[cfg(target_os = "android")] android_app: Option<android_activity::AndroidApp>) -> eframe::Result {
     // First, so the panic hook and every start-up record are logged (`logging`).
     let logger = logging::install();
+    // Android has no command line: the empty iterator is exactly the launch a phone starts with.
+    let args: Box<dyn Iterator<Item = std::ffi::OsString>> =
+        if cfg!(target_os = "android") { Box::new(std::iter::empty()) } else { Box::new(std::env::args_os().skip(1)) };
     // lossy, so a value that is not Unicode is reported like any other bad port instead of ignored
     let env_port = std::env::var_os("FILMCRAFT_CONTROL_PORT").map(|p| p.to_string_lossy().into_owned());
-    let launch = match args::parse(env_port, std::env::args_os().skip(1)) {
+    let mut launch = match args::parse(env_port, args) {
         Ok(Cli::Run(l)) => l,
         Ok(Cli::Help) => {
             tell(args::USAGE, false);
@@ -96,7 +131,24 @@ fn main() -> eframe::Result {
             std::process::exit(2);
         }
     };
+    // Android has no per-user data folder to resolve (no HOME, no XDG): the app-private storage
+    // directory the activity hands us is where logs, auto-save and settings live. eframe cannot
+    // create its event loop on Android without the activity's handle either — without it
+    // `run_native` fails before the window exists and the activity ends on launch.
+    #[cfg(target_os = "android")]
+    let android_files: Option<std::path::PathBuf> = android_app.as_ref().and_then(|app| {
+        let dir = app.internal_data_path();
+        if dir.is_none() {
+            log::warn!("android storage: no internal data path; saves, logs and auto-save stay unavailable");
+        }
+        dir
+    });
     let data_root = launch.data_dir.clone().or_else(default_data_dir);
+    #[cfg(target_os = "android")]
+    let data_root = data_root.or_else(|| android_files.clone());
+    // The resolved root is what `app_creator` builds the session's auto-save and settings from,
+    // so Android's app-private directory reaches them exactly like `--data-dir` does.
+    launch.data_dir = data_root.clone();
     let log_dir = data_root.as_ref().map(|d| d.join(logging::LOG_DIR));
     log::info!("FilmCraft {} ({} {})", env!("CARGO_PKG_VERSION"), std::env::consts::OS, std::env::consts::ARCH);
     // The log file lives next to the crash logs; opened after the arguments, so `--help`,
@@ -132,6 +184,12 @@ fn main() -> eframe::Result {
     }
     let started = loop {
         let mut options = native_options(launch.control_port.is_some());
+        // The activity's handle (Android only): eframe's event loop is built from it, and the
+        // clone keeps a graphics start that steps down able to try again.
+        #[cfg(target_os = "android")]
+        {
+            options.android_app = android_app.clone();
+        }
         // Before eframe creates the wgpu instance (e.g. no OpenGL on Windows, see graphics.rs).
         graphics::apply(&mut options, graphics.mode(), backend_override);
         let app_created = Arc::new(AtomicBool::new(false));
@@ -158,7 +216,12 @@ fn main() -> eframe::Result {
         let msg = format!("FilmCraft could not start its window: {e}\n\nUpdating the graphics driver usually fixes this.");
         log::error!("{msg}");
         filmcraft_ui_egui::crash::record(&msg);
-        let _ = rfd::MessageDialog::new().set_title("FilmCraft").set_description(&msg).set_level(rfd::MessageLevel::Error).show();
+        // Android has no system message dialogs (rfd has no backend there): the reason above is
+        // what logcat and the crash log keep, and the activity ends with it.
+        #[cfg(not(target_os = "android"))]
+        {
+            let _ = rfd::MessageDialog::new().set_title("FilmCraft").set_description(&msg).set_level(rfd::MessageLevel::Error).show();
+        }
     }
     started
 }
@@ -260,56 +323,86 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
         // Keep device selection available even when the default device is unavailable.
         // Settings ▸ Audio Hardware is applied on the first frame (`apply_prefs`).
         app.audio = Some(Box::new(audio::CpalOut::new()));
-        app.hooks.pick_files = Some(Box::new(|exts: &[&str]| {
-            rfd::FileDialog::new()
-                .add_filter(filmcraft_ui_egui::i18n::t("Media"), &file_filters::extensions(exts))
-                .pick_files()
-                .unwrap_or_default()
-                .into_iter()
-                .map(|p| p.to_string_lossy().to_string())
-                .collect()
-        }));
-        // Link Media ▸ Locate…, Attach Proxies, Reconnect Full Resolution: one path, not imported.
-        app.hooks.pick_file_for_relink = Some(Box::new(|exts: &[&str], _hint| {
-            rfd::FileDialog::new()
-                .add_filter(filmcraft_ui_egui::i18n::t("Media"), &file_filters::extensions(exts))
-                .pick_file()
-                .map(|p| p.to_string_lossy().to_string())
-        }));
-        app.hooks.pick_save = Some(Box::new(|name: &str| {
-            rfd::FileDialog::new()
-                .add_filter(filmcraft_ui_egui::i18n::t("FilmCraft Project"), &file_filters::extensions(&["fcproj"]))
-                .set_file_name(name)
-                .save_file()
-                .map(|p| p.to_string_lossy().to_string())
-        }));
-        app.hooks.pick_save_as = Some(Box::new(|filter: &str, exts: &[&str], name: &str| {
-            // a full path (Quick Export, Export mode) opens the dialog in its folder
-            let path = std::path::Path::new(name);
-            let mut dialog = rfd::FileDialog::new()
-                .add_filter(filmcraft_ui_egui::i18n::t(filter), &file_filters::extensions(exts))
-                .set_file_name(path.file_name().map_or(name.into(), |n| n.to_string_lossy()));
-            if let Some(dir) = path.parent().filter(|d| d.is_dir()) {
-                dialog = dialog.set_directory(dir);
-            }
-            dialog.save_file().map(|p| p.to_string_lossy().to_string())
-        }));
-        app.hooks.pick_folder = Some(Box::new(|| rfd::FileDialog::new().pick_folder().map(|p| p.to_string_lossy().to_string())));
-        app.hooks.pick_folder_at =
-            Some(Box::new(|dir: &str| rfd::FileDialog::new().set_directory(dir).pick_folder().map(|p| p.to_string_lossy().into_owned())));
-        // Linux: the XDG portal call blocks until the user chooses, which would stop the frame
-        // loop (GNOME offers to force-quit the window after about five seconds, #260). Show the
-        // dialog on its own thread instead; the app keeps running and acts on the answer.
-        #[cfg(target_os = "linux")]
+        // File dialogs: rfd has no Android backend (it does not compile for the target), so on a
+        // phone these hooks stay empty and the commands' dialogs are served by FilmCraft's own
+        // in-app browser instead of a system picker.
+        #[cfg(not(target_os = "android"))]
         {
-            app.hooks.run_dialog = Some(Box::new(run_dialog_off_thread));
+            app.hooks.pick_files = Some(Box::new(|exts: &[&str]| {
+                rfd::FileDialog::new()
+                    .add_filter(filmcraft_ui_egui::i18n::t("Media"), &file_filters::extensions(exts))
+                    .pick_files()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .collect()
+            }));
+            // Link Media ▸ Locate…, Attach Proxies, Reconnect Full Resolution: one path, not imported.
+            app.hooks.pick_file_for_relink = Some(Box::new(|exts: &[&str], _hint| {
+                rfd::FileDialog::new()
+                    .add_filter(filmcraft_ui_egui::i18n::t("Media"), &file_filters::extensions(exts))
+                    .pick_file()
+                    .map(|p| p.to_string_lossy().to_string())
+            }));
+            app.hooks.pick_save = Some(Box::new(|name: &str| {
+                rfd::FileDialog::new()
+                    .add_filter(filmcraft_ui_egui::i18n::t("FilmCraft Project"), &file_filters::extensions(&["fcproj"]))
+                    .set_file_name(name)
+                    .save_file()
+                    .map(|p| p.to_string_lossy().to_string())
+            }));
+            app.hooks.pick_save_as = Some(Box::new(|filter: &str, exts: &[&str], name: &str| {
+                // a full path (Quick Export, Export mode) opens the dialog in its folder
+                let path = std::path::Path::new(name);
+                let mut dialog = rfd::FileDialog::new()
+                    .add_filter(filmcraft_ui_egui::i18n::t(filter), &file_filters::extensions(exts))
+                    .set_file_name(path.file_name().map_or(name.into(), |n| n.to_string_lossy()));
+                if let Some(dir) = path.parent().filter(|d| d.is_dir()) {
+                    dialog = dialog.set_directory(dir);
+                }
+                dialog.save_file().map(|p| p.to_string_lossy().to_string())
+            }));
+            app.hooks.pick_folder = Some(Box::new(|| rfd::FileDialog::new().pick_folder().map(|p| p.to_string_lossy().to_string())));
+            app.hooks.pick_folder_at =
+                Some(Box::new(|dir: &str| rfd::FileDialog::new().set_directory(dir).pick_folder().map(|p| p.to_string_lossy().into_owned())));
+            // Linux: the XDG portal call blocks until the user chooses, which would stop the frame
+            // loop (GNOME offers to force-quit the window after about five seconds, #260). Show the
+            // dialog on its own thread instead; the app keeps running and acts on the answer.
+            #[cfg(target_os = "linux")]
+            {
+                app.hooks.run_dialog = Some(Box::new(run_dialog_off_thread));
+            }
+            app.hooks.pick_open_file = Some(Box::new(|filter: &str, exts: &[&str]| {
+                rfd::FileDialog::new()
+                    .add_filter(filmcraft_ui_egui::i18n::t(filter), &file_filters::extensions(exts))
+                    .pick_file()
+                    .map(|p| p.to_string_lossy().to_string())
+            }));
+            app.hooks.pick_open_project = Some(Box::new(|| {
+                rfd::FileDialog::new()
+                    .add_filter(filmcraft_ui_egui::i18n::t("FilmCraft Project"), &file_filters::extensions(&["fcproj"]))
+                    .pick_file()
+                    .map(|p| p.to_string_lossy().to_string())
+            }));
+            // Help menu, About and Discord links (#642): eframe is built without its `links`
+            // feature, so `ctx.open_url` does nothing on the desktop. Detached, so a launcher
+            // that waits for the browser never freezes the UI.
+            app.hooks.open_url = Some(Box::new(|url: &str| open::that_detached(url).map_err(|e| e.to_string())));
+            // Files and images on the system clipboard for Paste (#611).
+            app.hooks.clipboard_media = Some(Box::new(clipboard_media));
         }
-        app.hooks.open_path = Some(Box::new(open_path));
-        // Help menu, About and Discord links (#642): eframe is built without its `links`
-        // feature, so `ctx.open_url` does nothing on the desktop. Detached, so a launcher
-        // that waits for the browser never freezes the UI.
-        app.hooks.open_url = Some(Box::new(|url: &str| open::that_detached(url).map_err(|e| e.to_string())));
-        app.hooks.clipboard_media = Some(Box::new(clipboard_media));
+        // Android has no browser to hand a URL to and no file manager to hand a path to (both
+        // would need an `ACTION_VIEW` intent over JNI): answer with the reason, so the link dialog
+        // shows the address and Paste / Edit Original report why instead of doing nothing.
+        #[cfg(target_os = "android")]
+        {
+            app.hooks.open_url = Some(Box::new(|_: &str| Err("no browser on Android (yet)".into())));
+            app.hooks.open_path = Some(Box::new(|path: &str, _reveal: bool| Err(format!("FilmCraft can't open {path} on Android (yet)"))));
+        }
+        #[cfg(not(target_os = "android"))]
+        {
+            app.hooks.open_path = Some(Box::new(open_path));
+        }
         // Settings ▸ General ▸ Interface Language ▸ System Language (#218).
         app.hooks.cursor_screen_position = Some(Box::new(filmcraft_platform::cursor::cursor_screen_position));
         app.hooks.system_languages = Some(Box::new(|| sys_locale::get_locales().collect()));
@@ -318,18 +411,6 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
         app.hooks.system_theme = appearance::service();
         app.hooks.raise_without_focus = Some(Box::new(|| {
             window_raise::raise_without_focus();
-        }));
-        app.hooks.pick_open_file = Some(Box::new(|filter: &str, exts: &[&str]| {
-            rfd::FileDialog::new()
-                .add_filter(filmcraft_ui_egui::i18n::t(filter), &file_filters::extensions(exts))
-                .pick_file()
-                .map(|p| p.to_string_lossy().to_string())
-        }));
-        app.hooks.pick_open_project = Some(Box::new(|| {
-            rfd::FileDialog::new()
-                .add_filter(filmcraft_ui_egui::i18n::t("FilmCraft Project"), &file_filters::extensions(&["fcproj"]))
-                .pick_file()
-                .map(|p| p.to_string_lossy().to_string())
         }));
         #[cfg(target_os = "macos")]
         {
@@ -347,6 +428,9 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
 }
 
 /// Files copied in the file manager, else an image, on the system clipboard (Paste, #611).
+/// No Android build: arboard has no backend there (egui-winit drops it for the same reason), so
+/// the hook stays empty and Paste only pastes clips copied inside FilmCraft.
+#[cfg(not(target_os = "android"))]
 fn clipboard_media() -> Option<filmcraft_ui_egui::ClipboardMedia> {
     let mut clipboard = arboard::Clipboard::new().ok()?;
     if let Ok(files) = clipboard.get().file_list()
@@ -359,7 +443,9 @@ fn clipboard_media() -> Option<filmcraft_ui_egui::ClipboardMedia> {
 }
 
 /// Open a file in its default application, or reveal it in the file manager (Edit Original,
-/// Reveal Log Files).
+/// Reveal Log Files). Not on Android: there is no file manager to hand a path to without an
+/// intent over JNI, so the host reports that instead of trying to spawn `xdg-open`.
+#[cfg(not(target_os = "android"))]
 fn open_path(path: &str, reveal: bool) -> Result<(), String> {
     let mut cmd = if cfg!(target_os = "macos") {
         let mut c = std::process::Command::new("open");
