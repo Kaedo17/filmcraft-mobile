@@ -2290,7 +2290,14 @@ fn stamp_android_modifiers(events: &mut Vec<egui::Event>, held: &mut egui::Modif
             }
             egui::Event::Key { key: egui::Key::ShiftLeft | egui::Key::ShiftRight, pressed, .. } => held.shift = *pressed,
             egui::Event::Key { key: egui::Key::AltLeft | egui::Key::AltRight, pressed, .. } => held.alt = *pressed,
+            // The wheel and the buttons carry their own modifiers too (Alt + wheel zooms the
+            // Timeline, Ctrl + wheel scrolls it sideways, Ctrl + click selects), and egui-winit
+            // fills them from its own state — always empty here. Stamp them with what was held
+            // when they fired.
             egui::Event::Key { modifiers, .. } => *modifiers = *held,
+            egui::Event::MouseWheel { modifiers, .. } | egui::Event::PointerButton { modifiers, .. } => {
+                *modifiers = *held;
+            }
             _ => {}
         }
     }
@@ -2380,6 +2387,26 @@ mod android_modifier_tests {
         let plain = stamped(&events)[0];
         assert!(plain.matches_logically(Modifiers::NONE));
         assert!(!plain.matches_logically(Modifiers::COMMAND));
+    }
+
+    #[test]
+    fn wheel_and_click_carry_the_held_modifiers() {
+        let ctrl = Modifiers { ctrl: true, command: true, ..Modifiers::NONE };
+        let wheel =
+            Event::MouseWheel { unit: egui::MouseWheelUnit::Line, delta: egui::vec2(0.0, 1.0), phase: egui::TouchPhase::Move, modifiers: Modifiers::NONE };
+        let click = Event::PointerButton { pos: egui::pos2(10.0, 10.0), button: egui::PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE };
+        let (events, _) = stamp(vec![key(Key::ControlLeft, true), wheel, click]);
+        // Alt + wheel zoom and Ctrl + click read the event's own modifiers, never the frame's.
+        assert_eq!(events[1], wheel_modifiers(ctrl), "the wheel under Ctrl carries the chord");
+        assert_eq!(events[2], click_modifiers(ctrl), "a click under Ctrl carries the chord");
+    }
+
+    fn wheel_modifiers(m: Modifiers) -> Event {
+        Event::MouseWheel { unit: egui::MouseWheelUnit::Line, delta: egui::vec2(0.0, 1.0), phase: egui::TouchPhase::Move, modifiers: m }
+    }
+
+    fn click_modifiers(m: Modifiers) -> Event {
+        Event::PointerButton { pos: egui::pos2(10.0, 10.0), button: egui::PointerButton::Primary, pressed: true, modifiers: m }
     }
 }
 
