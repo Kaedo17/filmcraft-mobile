@@ -318,7 +318,7 @@ platforms** G4, G9, G17, G21; **performance** G16; **ecosystem** G11; **measurem
 
 - **Missing:** the arm64 APK launches, renders, saves and browses, and once the user grants "All
   files access" it reaches shared storage too — a clip can be picked from the gallery or Downloads
-  and a render can land in a shared folder (verified on a Samsung Tab S10 FE+, Android 16). What it
+  and a render can land in a shared folder (verified on a Samsung Tab S11, Android 16). What it
   still lacks: no hardware decode or encode (`platform`'s FFI covers VideoToolbox, Media
   Foundation / Direct3D 11, VA-API and NVDEC / NVENC only), so the phone decodes and encodes in
   pure Rust; the grant has to be given by hand from Android's settings page (an app can never hold
