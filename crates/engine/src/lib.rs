@@ -146,6 +146,11 @@ pub trait Services: Send + Sync {
     fn home_dir(&self) -> Option<String> {
         None
     }
+    /// The root the Media Browser may not leave (the Android build's shared-storage root, where
+    /// "Up one level" and typed paths are clamped to): `None` — the desktop — browses freely.
+    fn browse_root(&self) -> Option<String> {
+        None
+    }
 }
 
 /// Native filesystem services.
@@ -182,6 +187,11 @@ impl Services for FsServices {
     }
     fn home_dir(&self) -> Option<String> {
         media_browser::std_home_dir()
+    }
+    fn browse_root(&self) -> Option<String> {
+        // The one tree an Android app may browse (media_browser's Android volumes); `None`
+        // elsewhere, where the browser walks the whole filesystem as before.
+        if cfg!(target_os = "android") { media_browser::SHARED_ROOT.map(str::to_string) } else { None }
     }
     fn read_range(&self, path: &str, offset: u64, len: usize) -> std::io::Result<Vec<u8>> {
         use std::io::{Read, Seek, SeekFrom};

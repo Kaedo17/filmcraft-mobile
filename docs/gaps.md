@@ -1,6 +1,6 @@
 # Where FilmCraft falls short of Premiere Pro
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-15 · **Change:** minor (G21: shared storage, with Android's "All files access" grant) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-19 · **Change:** minor (G21: the Android Media Browser browses shared storage only and asks for the grant at launch) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 Every known shortfall, one entry each, ranked by what most stops an editor using FilmCraft for real
 work. This is the work list: agents should prefer it over adding checklist items. Numbers are in
@@ -314,12 +314,14 @@ platforms** G4, G9, G17, G21; **performance** G16; **ecosystem** G11; **measurem
 
 - **Missing:** the arm64 APK launches, renders, saves and browses, and once the user grants "All
   files access" it reaches shared storage too — a clip can be picked from the gallery or Downloads
-  and a render can land in a shared folder (verified on a Samsung Tab S11, Android 16). What it
-  still lacks: no hardware decode or encode (`platform`'s FFI covers VideoToolbox, Media
-  Foundation / Direct3D 11, VA-API and NVDEC / NVENC only), so the phone decodes and encodes in
-  pure Rust; the grant has to be given by hand from Android's settings page (an app can never hold
-  it silently, and Android can withdraw it); and the APK is signed with a local keystore for
-  `adb install`: no release signing or store packaging yet.
+  and a render can land in a shared folder (verified on a Samsung Tab S11, Android 16, and a TECNO
+  KJ5, Android 13). The Media Browser there offers only shared storage (Android cannot list `/`,
+  `/media` or `/mnt`, so advertising them only produced "Permission denied") and asks for the grant
+  once at launch, with "Not now" remembered. What it still lacks: no hardware decode or encode
+  (`platform`'s FFI covers VideoToolbox, Media Foundation / Direct3D 11, VA-API and NVDEC / NVENC
+  only), so the phone decodes and encodes in pure Rust; the grant has to be given by hand from
+  Android's settings page (an app can never hold it silently, and Android can withdraw it); and the
+  APK is signed with a local keystore for `adb install`: no release signing or store packaging yet.
 - **Estimate:** 20–45 h. Doc: [architecture.md](architecture.md#what-the-android-build-changes).
 
 ## Revision history
@@ -331,3 +333,4 @@ platforms** G4, G9, G17, G21; **performance** G16; **ecosystem** G11; **measurem
 | 2026-10-12 | minor | G10: OpenEXR PXR24 import |
 | 2026-10-15 | minor | G21: the Android build is app-private only (the arm64 APK launches, saves and renders on a tablet; shared storage, hardware decode and store packaging remain) |
 | 2026-10-15 | minor | G21: shared storage on Android — the in-app browser's second root behind "All files access" (the grant is checked and opened over JNI, the entry crate's named `unsafe` exception); hardware codecs and store packaging remain, so the gap is retitled |
+| 2026-10-19 | minor | G21: the Android Media Browser offers only shared storage (no `/` or mounts, which an app cannot list) and a one-shot launch prompt asks for "All files access", "Not now" remembered; verified on a TECNO KJ5 (Android 13) |

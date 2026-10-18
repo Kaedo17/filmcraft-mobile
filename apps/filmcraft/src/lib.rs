@@ -116,9 +116,9 @@ pub fn run() -> eframe::Result {
 #[derive(Clone)]
 pub struct SharedStorageAccess {
     /// Whether the grant holds right now (re-checked whenever the browser shows the root).
-    pub granted: std::sync::Arc<dyn Fn() -> bool>,
+    pub granted: std::sync::Arc<dyn Fn() -> bool + Send + Sync>,
     /// Ask for it: the system settings page on Android 11+, the permission dialog before that.
-    pub ask: std::sync::Arc<dyn Fn()>,
+    pub ask: std::sync::Arc<dyn Fn() + Send + Sync>,
 }
 
 /// Android entry point: like [`run`], but with the activity's handle, which eframe's event loop
@@ -473,12 +473,17 @@ fn app_creator(
         // on every visit and open the system page that grants it. Both closures come from the
         // entry crate's JNI (`SharedStorageAccess`); `None` there — desktop, or no JVM — leaves
         // the switcher undrawn and the browser on its app-private root alone.
-        app.hooks.shared_storage_root = cfg!(target_os = "android").then(|| std::path::PathBuf::from(android_storage::SHARED_ROOT));
+        app.hooks.shared_storage_root =
+            cfg!(target_os = "android").then(|| std::path::PathBuf::from(filmcraft_engine::media_browser::SHARED_ROOT.unwrap_or(android_storage::SHARED_ROOT)));
         if let Some(a) = access.as_ref() {
             let granted = std::sync::Arc::clone(&a.granted);
             app.hooks.shared_storage_granted = Some(Box::new(move || granted()));
             let ask = std::sync::Arc::clone(&a.ask);
             app.hooks.shared_storage_grant = Some(Box::new(move || ask()));
+            // The launch-time ask for the grant is the frontend's own prompt
+            // (`ui_egui::panels::android_access`), offered once the first frames have rendered.
+            // It reads these two hooks, so every platform that can check and ask gets the same
+            // prompt without a host-side timer.
         }
         #[cfg(not(target_os = "android"))]
         {

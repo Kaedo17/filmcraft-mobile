@@ -3626,3 +3626,6 @@
 	Grant access	Conceder acceso
 	Allow "All files access" for FilmCraft on the settings page, then tap Shared storage.	Permite "All files access" para FilmCraft en la página de ajustes y luego toca Almacenamiento compartido.
 	This build can't request shared-storage access.	Esta versión no puede solicitar acceso al almacenamiento compartido.
+	Shared storage needs "All files access" to browse.	El almacenamiento compartido necesita "All files access" para explorarse.
+	Allow access to all files?	¿Permitir acceso a todos los archivos?
+	FilmCraft needs "All files access" to open and save files in shared storage.	FilmCraft necesita "All files access" para abrir y guardar archivos en el almacenamiento compartido.

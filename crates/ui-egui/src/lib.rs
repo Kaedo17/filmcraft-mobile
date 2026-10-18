@@ -307,6 +307,9 @@ pub struct FilmcraftApp {
     pub hooks: HostHooks,
     pub dialog: Option<Dialog>,
     pub file_dialogs: panels::file_dialogs::FileDialogState,
+    /// The launch-time ask for Android's "All files access" grant (Android; see
+    /// `panels::android_access`). Idle on every host that cannot check or ask for it.
+    pub(crate) android_access: panels::android_access::State,
     /// The native file dialog the host is showing ([`Self::pick`]).
     native_dialog: Option<native_dialogs::PendingDialog>,
     pub auto: automation::Registry,
@@ -577,6 +580,7 @@ impl FilmcraftApp {
             // Unsaved changes left by a session that died are offered first thing.
             dialog: recovery.then_some(Dialog::Recovery),
             file_dialogs: Default::default(),
+            android_access: Default::default(),
             native_dialog: None,
             auto: Default::default(),
             textures: HashMap::new(),

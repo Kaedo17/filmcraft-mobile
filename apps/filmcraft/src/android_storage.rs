@@ -21,8 +21,12 @@ use std::path::{Path, PathBuf};
 /// Android's shared internal-storage root (`/storage/emulated/0`, the primary shared tree): the
 /// in-app browser's *second* root beside [`Layout::base`], offered only on Android and usable
 /// only once the user grants "All files access" (`MANAGE_EXTERNAL_STORAGE`) — the grant is what
-/// decides whether it can be listed, so the path itself is always the same.
-pub const SHARED_ROOT: &str = "/storage/emulated/0";
+/// decides whether it can be listed, so the path itself is always the same. Sourced from the
+/// engine (`media_browser::SHARED_ROOT`), whose Media Browser and volumes use the same path.
+pub const SHARED_ROOT: &str = match filmcraft_engine::media_browser::SHARED_ROOT {
+    Some(p) => p,
+    None => "/storage/emulated/0",
+};
 
 /// The storage folders below the app-private base directory.
 #[derive(Clone, Debug, PartialEq, Eq)]

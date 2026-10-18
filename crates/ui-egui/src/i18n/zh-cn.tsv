@@ -3601,3 +3601,6 @@
 	Grant access	授予权限
 	Allow "All files access" for FilmCraft on the settings page, then tap Shared storage.	在设置页面为 FilmCraft 允许“所有文件访问”，然后点按“共享存储”。
 	This build can't request shared-storage access.	此版本无法请求共享存储访问权限。
+	Shared storage needs "All files access" to browse.	共享存储需要“所有文件访问”权限才能浏览。
+	Allow access to all files?	允许访问所有文件吗？
+	FilmCraft needs "All files access" to open and save files in shared storage.	FilmCraft 需要“所有文件访问”权限才能在共享存储中打开和保存文件。

@@ -56,6 +56,11 @@ pub struct GeneralPrefs {
     pub show_compatibility_issues: bool,
     pub show_project_bin_in_tab: bool,
     pub show_mask_tracker_preview: bool,
+    /// Android's launch-time ask for "All files access" (`MANAGE_EXTERNAL_STORAGE`): the prompt's
+    /// "Not Now" sets it, so FilmCraft stops asking at launch. The Media Browser's own Grant
+    /// access button still asks on demand whatever this says. Only Android ever shows the prompt,
+    /// so it has no row in the Preferences dialog; it loads, saves and round-trips on every host.
+    pub android_skip_all_files_access_prompt: bool,
     /// Most recently opened / saved projects (newest first; not shown in the dialog).
     pub recent_projects: Vec<String>,
 }
@@ -79,6 +84,7 @@ impl Default for GeneralPrefs {
             show_compatibility_issues: true,
             show_project_bin_in_tab: true,
             show_mask_tracker_preview: true,
+            android_skip_all_files_access_prompt: false,
             recent_projects: Vec::new(),
         }
     }

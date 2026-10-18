@@ -59,6 +59,20 @@ fn preferences_get_set_and_persist() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
+/// Android's launch-time "All files access" prompt answer ("Not Now"): remembered, saved and
+/// reloaded on every platform — the prompt itself only ever appears on Android, where the host
+/// can both check and ask for the grant.
+#[test]
+fn the_android_access_prompt_answer_round_trips() {
+    let mut s = Session::default();
+    assert!(!s.prefs.general.android_skip_all_files_access_prompt, "new users still get the prompt");
+    s.execute("prefs.set", json!({"key": "general.androidSkipAllFilesAccessPrompt", "value": true})).unwrap();
+    assert!(s.prefs.general.android_skip_all_files_access_prompt);
+    let text = serde_json::to_string(&s.prefs).unwrap();
+    let reloaded: autosave::Preferences = serde_json::from_str(&text).unwrap();
+    assert!(reloaded.general.android_skip_all_files_access_prompt);
+}
+
 #[test]
 fn crash_recovery_end_to_end() {
     let d = temp_dir("recover");
