@@ -543,6 +543,11 @@ fn slider_track(ui: &mut egui::Ui, cx: &mut Ctx, track: Rect, key: &str, v: f64,
     if !active {
         return;
     }
+    // a finger that means to scroll the panel skips the slider (mostly-vertical move before the
+    // hold), exactly as the other arbitrated lists decide; a mouse is never arbitrated
+    if matches!(crate::widgets::touch_row(ui, &resp, egui::Id::new("es-browse")), crate::widgets::TouchRow::Scroll) {
+        return;
+    }
     if (resp.dragged() || resp.clicked())
         && let Some(p) = resp.interact_pointer_pos()
     {

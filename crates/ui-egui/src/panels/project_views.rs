@@ -196,6 +196,19 @@ pub fn item_interactions(
     drag: bool,
     menu: bool,
 ) {
+    // A finger press is arbitrated: panning skips the card entirely, a hold grabs (Hold, then the
+    // re-armed Grab). A mouse press grabs on drag_started below, as it always did.
+    if drag {
+        match crate::widgets::touch_row(ui, resp, egui::Id::new((&v.prefix, "scroll"))) {
+            crate::widgets::TouchRow::Scroll => return,
+            crate::widgets::TouchRow::Hold | crate::widgets::TouchRow::Grab => {
+                if crate::panels::dragged_project_item(ui).is_none() {
+                    crate::panels::start_drag_item(ui, id);
+                }
+            }
+            crate::widgets::TouchRow::None | crate::widgets::TouchRow::Pressing => {}
+        }
+    }
     if resp.clicked() {
         let mods = click_modifiers(ui);
         let order = if mods.shift { items_in_view(app, v, &app.ui.project_search.to_ascii_lowercase()) } else { Vec::new() };
@@ -698,6 +711,16 @@ fn list_bin(app: &mut FilmcraftApp, ui: &mut egui::Ui, bin: &Bin, depth: usize, 
         app.auto.add(&format!("{}.bin.{}", v.prefix, b.id.0), r.intersect(ui.clip_rect()), &b.name);
         app.auto.add(&format!("{}.bin.{}.toggle", v.prefix, b.id.0), tri, "Expand");
         accept_bin_drop(app, ui, r, b.id.0, actions);
+        // bins arbitrate too: a finger pans the list, a hold picks the bin up
+        match crate::widgets::touch_row(ui, &resp, egui::Id::new((&v.prefix, "scroll"))) {
+            crate::widgets::TouchRow::Scroll => continue,
+            crate::widgets::TouchRow::Hold | crate::widgets::TouchRow::Grab => {
+                if crate::panels::dragged_bin(ui).is_none() {
+                    crate::panels::start_drag_bin(ui, b.id.0);
+                }
+            }
+            crate::widgets::TouchRow::None | crate::widgets::TouchRow::Pressing => {}
+        }
         if resp.drag_started() {
             crate::panels::start_drag_bin(ui, b.id.0);
         }
@@ -931,6 +954,15 @@ fn bin_card(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, b: &Bin, v: &Vie
     }
     app.auto.add(&format!("{}.bin.{}", v.prefix, b.id.0), th, &b.name);
     accept_bin_drop(app, ui, th, b.id.0, actions);
+    match crate::widgets::touch_row(ui, &resp, egui::Id::new((&v.prefix, "scroll"))) {
+        crate::widgets::TouchRow::Scroll => {}
+        crate::widgets::TouchRow::Hold | crate::widgets::TouchRow::Grab => {
+            if crate::panels::dragged_bin(ui).is_none() {
+                crate::panels::start_drag_bin(ui, b.id.0);
+            }
+        }
+        crate::widgets::TouchRow::None | crate::widgets::TouchRow::Pressing => {}
+    }
     if resp.drag_started() {
         crate::panels::start_drag_bin(ui, b.id.0);
     }
