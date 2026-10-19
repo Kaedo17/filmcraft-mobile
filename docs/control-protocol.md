@@ -165,11 +165,14 @@ dialog is FilmCraft's own browser and `ui.click` drives it with `androidFile.*`:
 `rootApp` / `rootShared` (the switcher between the two roots: the app-private directory, and shared
 storage — which reads `Shared storage (grant access)` and calls the host's grant hook instead of
 navigating while "All files access" is not held), `grant` (inside the shared root while it cannot
-be read — it asks the host for the grant too), `newFolder` / `folderName` / `create`, `dir.<n>` and
-`file.<n>` (the *n*th folder / file of the listing), `project.<n>` (the Open Project list),
-`choose` (a folder pick — including the save prompt's
+be read — it asks the host for the grant too), `newFolder` / `folderName` / `create`,
+`view.list` / `view.small` / `view.medium` / `view.large` (how the listing is drawn: one column of
+rows, or a grid of icons at that size — the choice is remembered at `general.pickerView`, so the next
+dialog opens the same way), `entry.<name>` (a folder, file or saved project, by its file name — the
+Open Project list and the browser share the id, and it is the same id in every view, so a tap lands on
+the same entry whether the listing is rows or icons), `choose` (a folder pick — including the save prompt's
 `browse`, which returns to the prompt with that folder instead of answering — or a multi-file pick
-after `file.<n>` ticked its rows), `save`, `browse`, `cancel`, `name` (the save prompt's file-name
+after `entry.<name>` ticked its tiles), `save`, `browse`, `cancel`, `name` (the save prompt's file-name
 field) and `overwrite` — which appears only where saving would replace an existing file. A pick is answered
 exactly as a system dialog's would be: the command continues on the frame the id is clicked. The
 root a browser is clamped to is its own state now, so `up` stops at the top of the root it is in
