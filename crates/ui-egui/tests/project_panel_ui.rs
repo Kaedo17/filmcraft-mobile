@@ -1128,3 +1128,47 @@ fn escape_takes_back_a_media_browser_drag() {
     assert_eq!(d.app().session.project.to_json(), before, "nothing was placed on the Timeline");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A touch release arrives as the emulated mouse-up *and* a same-frame `Event::PointerGone`, which
+/// clears `pointer.latest_pos` but keeps `interact_pos` — so a drop decided on the release frame
+/// must read its position from the one that survives. Media Browser file → Timeline: the item is
+/// imported AND placed (the release position is where the drop lands), with both events in the
+/// release frame exactly as egui-winit sends them on Android.
+#[test]
+fn media_browser_drag_drops_with_a_touch_release() {
+    let dir = media_dir("drag-touch");
+    let mut session = Session::default();
+    session.execute("file.openDemoProject", json!({})).unwrap();
+    let mut d = Driver::with(session);
+    d.ok("ui.set", json!({"workspace": "Editing"}));
+    d.ok("ui.panel.show", json!({"panel": "MediaBrowser"}));
+    d.exec("mediaBrowser.navigate", json!({"path": dir.to_string_lossy()}));
+    d.frames(3);
+    d.wait_for("mediaBrowser.entry.b-roll.wav");
+    let n0 = d.app().session.project.items.len();
+    let e = d.rect("mediaBrowser.entry.b-roll.wav");
+    let tl = d.rect("panel.Timeline");
+    let (from, to) = (egui::pos2(e[0] + 40.0, e[1] + e[3] / 2.0), egui::pos2(tl[0] + tl[2] * 0.6, tl[1] + tl[3] * 0.75));
+    let mut send = |e: egui::Event| {
+        d.harness.input_mut().events.push(e);
+        d.frames(1);
+    };
+    let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
+    send(egui::Event::PointerMoved(from));
+    send(button(from, true));
+    for k in 1..=20 {
+        send(egui::Event::PointerMoved(from.lerp(to, k as f32 / 20.0)));
+    }
+    // egui-winit's touch release (lib.rs): the released button, then PointerGone in the same
+    // frame — `latest_pos` is None from then on, the drop still has to land at `to`.
+    d.harness.input_mut().events.push(button(to, false));
+    d.harness.input_mut().events.push(egui::Event::PointerGone);
+    d.frames(6);
+    assert_eq!(d.app().session.project.items.len(), n0 + 1, "the import is kept after a touch release");
+    assert!(
+        d.app().session.active_sequence().is_some_and(|q| q.video_tracks.iter().chain(&q.audio_tracks).any(|t| !t.items.is_empty())),
+        "the drag was placed on the Timeline; status: {}",
+        d.app().ui.status
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

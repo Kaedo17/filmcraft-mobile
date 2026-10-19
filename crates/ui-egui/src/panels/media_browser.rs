@@ -468,7 +468,9 @@ fn start_file_drag(app: &mut FilmcraftApp, ui: &egui::Ui, e: &Entry) {
     }
     crate::panels::start_drag_item(ui, first);
     if !items.is_empty() {
-        let pos = ui.ctx().pointer_latest_pos().unwrap_or_default();
+        // the press frame of a touch can already be a PointerGone-ish frame (start + move in one);
+        // this position only seeds the cache, a drop overwrites it from `drop_pointer_pos`.
+        let pos = crate::panels::drop_pointer_pos(ui.ctx()).or_else(|| ui.ctx().pointer_latest_pos()).unwrap_or_default();
         let after = app.session.history.undo.len();
         with_cache(ui.ctx(), |c| c.drag = Some((items, after.max(before), pos)));
     }
@@ -483,7 +485,7 @@ fn file_drag_items(known: &[ItemId], imported: &[u64]) -> Vec<ItemId> {
 fn finish_drag(app: &mut FilmcraftApp, ui: &egui::Ui) {
     let Some((items, hist, _)) = with_cache(ui.ctx(), |c| c.drag.clone()) else { return };
     if crate::panels::dragged_project_item(ui).is_some() {
-        if let Some(p) = ui.ctx().pointer_latest_pos() {
+        if let Some(p) = crate::panels::drop_pointer_pos(ui.ctx()) {
             with_cache(ui.ctx(), |c| {
                 if let Some(d) = c.drag.as_mut() {
                     d.2 = p;
