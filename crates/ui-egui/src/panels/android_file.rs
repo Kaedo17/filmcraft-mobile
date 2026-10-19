@@ -152,6 +152,84 @@ impl StorageRoot {
     }
 }
 
+/// How the picker lists entries: one column of rows (the shape a desktop's system picker has), or
+/// a grid of icons at one of three sizes — so what a file *is* (its picture) is visible before it
+/// is chosen. Stored at `general.pickerView` (the engine's [`PICKER_VIEWS`]) and switched with the
+/// picker's own view buttons.
+///
+/// [`PICKER_VIEWS`]: filmcraft_engine::settings::PICKER_VIEWS
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PickView {
+    /// Rows: a folder icon, then a name (and the tick of a chosen file).
+    List,
+    /// Icons at the smallest size: the most entries on screen at once.
+    Small,
+    Medium,
+    /// Icons large enough for real thumbnails — the default.
+    #[default]
+    Large,
+}
+
+impl PickView {
+    /// The stored value at `general.pickerView`; anything unknown reads as the default, so a
+    /// hand-edited settings file cannot break the picker.
+    pub fn parse(value: &str) -> PickView {
+        match value {
+            "list" => PickView::List,
+            "small" => PickView::Small,
+            "medium" => PickView::Medium,
+            _ => PickView::Large,
+        }
+    }
+
+    /// The value stored at `general.pickerView` (one of the engine's `PICKER_VIEWS`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PickView::List => "list",
+            PickView::Small => "small",
+            PickView::Medium => "medium",
+            PickView::Large => "large",
+        }
+    }
+
+    /// An icon view's tile: its width, its height and the characters of a file name it fits
+    /// (`List` has no tiles — its rows size themselves).
+    fn tile(self) -> (f32, f32, usize) {
+        match self {
+            PickView::List => (0.0, 0.0, 0),
+            PickView::Small => (84.0, 84.0, 14),
+            PickView::Medium => (120.0, 112.0, 18),
+            PickView::Large => (152.0, 136.0, 24),
+        }
+    }
+}
+
+/// How many tiles of `tile_w` fit across `width`, never zero (a sliver still lists its entries one
+/// per row).
+fn grid_cols(width: f32, tile_w: f32) -> usize {
+    ((width - 8.0) / tile_w.max(1.0)).floor().max(1.0) as usize
+}
+
+/// The extension of `path`, upper-cased: what an icon tile says when it has no picture to show (a
+/// project reads `FCPROJ`, a file with no extension reads `File`).
+fn ext_label(path: &Path) -> String {
+    path.extension().and_then(|e| e.to_str()).map(str::to_uppercase).filter(|e| !e.is_empty()).unwrap_or_else(|| tl!("File").to_string())
+}
+
+/// The view the picker opens in, remembered across dialogs at `general.pickerView`.
+pub(crate) fn stored_view(app: &FilmcraftApp) -> PickView {
+    PickView::parse(&app.session.prefs.general.picker_view)
+}
+
+/// Switch the open picker to `view` and remember it for the next dialog. A host whose prefs cannot
+/// be written keeps the view for this dialog alone.
+fn remember_view(app: &mut FilmcraftApp, ctx: &egui::Context, view: PickView) {
+    app.file_dialogs.android_file.view = view;
+    if let Err(e) = crate::menus::invoke(app, ctx, "prefs.set", serde_json::json!({"key": "general.pickerView", "value": view.as_str()})) {
+        log::warn!("file picker: could not remember the view: {e}");
+    }
+}
+
 fn name_key(p: &Path) -> String {
     p.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default()
 }
@@ -193,16 +271,19 @@ pub struct AndroidFileDraft {
     selected: Vec<PathBuf>,
     /// A save that would replace an existing file, waiting for the answer (see [`show`]).
     confirm: Option<PathBuf>,
+    /// How the browser and the Open Project list show their entries: [`stored_view`] when the
+    /// dialog opens, [`remember_view`] when the view buttons switch it.
+    view: PickView,
 }
 
 impl AndroidFileDraft {
     /// Serve `dialog` from the host's storage directory and return the channel its answer
     /// arrives on. `None`: this host offers no in-app storage (the desktop), so the caller keeps
-    /// its own pickers.
-    pub(crate) fn serve(&mut self, hooks: &HostHooks, dialog: &FileDialog) -> Option<Receiver<Vec<String>>> {
+    /// its own pickers. `view` is how the caller's prefs say to list entries ([`stored_view`]).
+    pub(crate) fn serve(&mut self, hooks: &HostHooks, view: PickView, dialog: &FileDialog) -> Option<Receiver<Vec<String>>> {
         let base = hooks.app_files_dir.clone()?;
         let (tx, rx) = std::sync::mpsc::channel();
-        let mut d = AndroidFileDraft { request: Some(dialog.clone()), answer: Some(tx), ..Default::default() };
+        let mut d = AndroidFileDraft { request: Some(dialog.clone()), answer: Some(tx), view, ..Default::default() };
         match dialog {
             FileDialog::SaveProject { name } => {
                 let (folder, file) = suggested(&base, &PROJECT_EXTS, name);
@@ -307,6 +388,15 @@ fn list_height(ctx: &egui::Context) -> f32 {
     (ctx.content_rect().height() - 300.0).clamp(140.0, 460.0)
 }
 
+/// The dialog width for the icon views: their grid needs the columns, so the dialog is wider than
+/// the row list's — still clamped to what the screen actually has.
+fn icon_width(ctx: &egui::Context) -> f32 {
+    (ctx.content_rect().width() - 40.0).clamp(300.0, 660.0)
+}
+
+/// The view toolbar's row: the listing gets that much less of the screen.
+const TOOLBAR_H: f32 = 38.0;
+
 /// Cut `text` to `max_w` with an ellipsis (measured, so a long name never runs off its row).
 fn fit(ui: &egui::Ui, text: &str, max_w: f32) -> String {
     let font = Tokens::ui(13.5);
@@ -351,6 +441,118 @@ fn row(app: &mut FilmcraftApp, ui: &mut egui::Ui, t: &Tokens, id: &str, label: &
     let shown = fit(ui, label, (right - x).max(20.0));
     ui.painter().text(Pos2::new(x, rect.center().y), Align2::LEFT_CENTER, shown, Tokens::ui(13.5), t.text);
     resp.clicked()
+}
+
+/// An icon-view tile: a folder, or a file whose picture the grid shows (falling back to the file's
+/// extension when there is no picture to decode).
+enum Tile {
+    Folder,
+    File(PathBuf),
+}
+
+/// One entry of the picker's icon grid.
+struct TileItem {
+    label: String,
+    tile: Tile,
+    selected: bool,
+}
+
+/// The picker's view buttons — `List`, then the three icon sizes — the current one highlighted.
+/// Returns the one tapped this frame (applied after the modal, like the dialog's other actions).
+fn view_toolbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, view: PickView) -> Option<PickView> {
+    let t = app.tokens;
+    let mut picked = None;
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(tl!("View")).size(11.5).color(t.text_dim));
+        for (mode, label) in
+            [(PickView::List, tl!("List")), (PickView::Small, tl!("Small")), (PickView::Medium, tl!("Medium")), (PickView::Large, tl!("Large"))]
+        {
+            let on = view == mode;
+            let b = egui::Button::new(RichText::new(label).size(12.5).color(if on { Color32::WHITE } else { t.text })).selected(on).min_size(vec2(0.0, 26.0));
+            let r = ui.add(b);
+            app.auto.add(&format!("androidFile.view.{}", mode.as_str()), r.rect, label);
+            if r.clicked() {
+                picked = Some(mode);
+            }
+        }
+    });
+    picked
+}
+
+/// Draw the icon grid of `items` — `size.x` wide and `size.y` tall, scrolled by a finger through
+/// [`crate::widgets::finger_scroll`] — and return the index of the entry tapped this frame. The
+/// grid's tiles all carry a name-based automation id, so a test (or an agent) taps the same entry
+/// in every view. Thumbnails decode at most twice per frame, so the rest arrive on later repaints.
+fn icon_grid(
+    app: &mut FilmcraftApp,
+    ui: &mut egui::Ui,
+    ctx: &egui::Context,
+    t: &Tokens,
+    size: egui::Vec2,
+    view: PickView,
+    items: &[TileItem],
+    key: &str,
+) -> Option<usize> {
+    let (tw, th, chars) = view.tile();
+    let (tw, th) = (tw.max(1.0), th.max(1.0));
+    let mut budget = 2u32;
+    let mut clicked = None;
+    crate::widgets::finger_bar(ui);
+    crate::widgets::finger_scroll(("android-file-grid", key)).max_height(size.y).auto_shrink([false, false]).show(ui, |ui| {
+        let width = ui.available_width();
+        let cols = grid_cols(width, tw);
+        let rows = items.len().div_ceil(cols.max(1));
+        let (rect, _) = ui.allocate_exact_size(vec2(width, (rows as f32 * th + 8.0).max(1.0)), egui::Sense::hover());
+        let clip = ui.clip_rect();
+        let lp = ui.painter().with_clip_rect(clip);
+        for (i, item) in items.iter().enumerate() {
+            let r =
+                Rect::from_min_size(Pos2::new(rect.min.x + 4.0 + (i % cols) as f32 * tw, rect.min.y + 4.0 + (i / cols) as f32 * th), vec2(tw - 8.0, th - 8.0));
+            if !r.intersects(clip) {
+                continue;
+            }
+            let resp = ui.interact(r, egui::Id::new(("androidFile.grid", key, item.label.as_str())), egui::Sense::click());
+            app.auto.add(&format!("androidFile.entry.{}", item.label), r, &item.label);
+            lp.rect_filled(
+                r,
+                4.0,
+                if item.selected {
+                    t.row_selected
+                } else if resp.hovered() {
+                    t.hover
+                } else {
+                    t.field_bg
+                },
+            );
+            // the picture sits above the name line at the tile's foot
+            let picture = Rect::from_min_max(Pos2::new(r.min.x + 6.0, r.min.y + 6.0), Pos2::new(r.max.x - 6.0, (r.max.y - 22.0).max(r.min.y + 7.0)));
+            match &item.tile {
+                Tile::Folder => {
+                    let side = (picture.width().min(picture.height()) * 0.6).max(10.0);
+                    crate::icons::paint(&lp, Rect::from_center_size(picture.center(), vec2(side, side * 0.88)), Icon::Folder, Color32::from_rgb(237, 150, 58));
+                }
+                Tile::File(path) => {
+                    let name = path.to_string_lossy();
+                    if !crate::panels::media_browser::file_thumbnail(app, ctx, &lp, &name, &item.label, picture, &mut budget) {
+                        lp.text(picture.center(), Align2::CENTER_CENTER, ext_label(path), Tokens::ui(10.0), t.text_faint);
+                    }
+                }
+            }
+            let shown = if item.label.chars().count() > chars {
+                format!("{}…", item.label.chars().take(chars.saturating_sub(1)).collect::<String>())
+            } else {
+                item.label.clone()
+            };
+            lp.text(Pos2::new(r.center().x, r.max.y - 11.0), Align2::CENTER_CENTER, shown, Tokens::ui(11.0), t.text);
+            if item.selected {
+                lp.text(Pos2::new(r.max.x - 5.0, r.min.y + 12.0), Align2::RIGHT_CENTER, "✓", Tokens::ui(11.0), t.accent);
+            }
+            if resp.clicked() {
+                clicked = Some(i);
+            }
+        }
+    });
+    clicked
 }
 
 /// Draw the in-app dialog the host's storage directory enabled, if one is open. Called every
@@ -459,23 +661,40 @@ fn save_prompt(app: &mut FilmcraftApp, ctx: &egui::Context, base: &Path, project
 /// Open Project: the saved projects, newest first, and a Browse… into the browser for one
 /// anywhere below the root.
 fn open_project(app: &mut FilmcraftApp, ctx: &egui::Context, base: &Path) {
+    let view = app.file_dialogs.android_file.view;
     let projects = list_projects(base);
+    let w = if view == PickView::List { width(ctx) } else { icon_width(ctx) };
+    let list_h = (list_height(ctx) - TOOLBAR_H).max(80.0);
+    let mut new_view: Option<PickView> = None;
     let mut open: Option<PathBuf> = None;
     let mut browse = false;
     let mut cancel = false;
-    if modal(app, ctx, "android-file-open-project", tl!("Open Project…"), width(ctx), |app, ui| {
+    if modal(app, ctx, "android-file-open-project", tl!("Open Project…"), w, |app, ui| {
         let t = app.tokens;
+        if let Some(v) = view_toolbar(app, ui, view) {
+            new_view = Some(v);
+        }
+        ui.add_space(6.0);
         if projects.is_empty() {
             ui.label(RichText::new(tl!("No saved projects yet.")).size(13.0).color(t.text_dim));
-        } else {
-            egui::ScrollArea::vertical().id_salt("android-file-open-project-list").auto_shrink([false, false]).max_height(list_height(ctx)).show(ui, |ui| {
-                for (i, p) in projects.iter().enumerate() {
+        } else if view == PickView::List {
+            crate::widgets::finger_bar(ui);
+            crate::widgets::finger_scroll("android-file-open-project-list").auto_shrink([false, false]).max_height(list_h).show(ui, |ui| {
+                for p in &projects {
                     let label = name_of(p);
-                    if row(app, ui, &t, &format!("project.{i}"), &label, false, false) {
+                    if row(app, ui, &t, &format!("entry.{label}"), &label, false, false) {
                         open = Some(p.clone());
                     }
                 }
             });
+        } else {
+            let items: Vec<TileItem> = projects.iter().map(|p| TileItem { label: name_of(p), tile: Tile::File(p.clone()), selected: false }).collect();
+            let size = vec2(ui.available_width(), list_h);
+            if let Some(i) = icon_grid(app, ui, ctx, &t, size, view, &items, "open-project")
+                && let Some(p) = projects.get(i)
+            {
+                open = Some(p.clone());
+            }
         }
         ui.add_space(10.0);
         ui.horizontal(|ui| {
@@ -487,7 +706,9 @@ fn open_project(app: &mut FilmcraftApp, ctx: &egui::Context, base: &Path) {
     })
     .is_some()
     {
-        if let Some(path) = open {
+        if let Some(v) = new_view {
+            remember_view(app, ctx, v);
+        } else if let Some(path) = open {
             app.file_dialogs.android_file.finish(vec![path.to_string_lossy().into_owned()]);
         } else if browse {
             let start = save_dir(base, true);
@@ -505,6 +726,7 @@ fn open_project(app: &mut FilmcraftApp, ctx: &egui::Context, base: &Path) {
 fn browser(app: &mut FilmcraftApp, ctx: &egui::Context, base: &Path, dir: PathBuf, request: &FileDialog) {
     let exts = app.file_dialogs.android_file.exts.clone();
     let many = app.file_dialogs.android_file.many;
+    let view = app.file_dialogs.android_file.view;
     let selected = app.file_dialogs.android_file.selected.clone();
     let mut folder_name = std::mem::take(&mut app.file_dialogs.android_file.folder_name);
     // The two roots: the app-private base always, and shared storage while the host offers it —
@@ -529,9 +751,12 @@ fn browser(app: &mut FilmcraftApp, ctx: &egui::Context, base: &Path, dir: PathBu
     let files = list_files(&dir, &exts);
     let listed = readable(&dir);
     let up = up_from(&root_dir, &dir);
-    // The switcher row takes the listing that much less of the screen.
-    let list_h = list_height(ctx) - if shared.is_some() { 36.0 } else { 0.0 };
+    // The switcher row takes the listing that much less of the screen (and the view toolbar too).
+    let list_h = (list_height(ctx) - if shared.is_some() { 36.0 } else { 0.0 } - TOOLBAR_H).max(80.0);
+    // The icon views get a wider dialog: their grid lays tiles across it.
+    let dialog_w = if view == PickView::List { width(ctx) } else { icon_width(ctx) };
 
+    let mut new_view: Option<PickView> = None;
     let mut enter: Option<PathBuf> = None;
     let mut go_up = false;
     let mut pick: Option<PathBuf> = None;
@@ -544,7 +769,7 @@ fn browser(app: &mut FilmcraftApp, ctx: &egui::Context, base: &Path, dir: PathBu
     let mut ask_grant = false;
     let mut grant = false;
 
-    if modal(app, ctx, "android-file-browser", &title, width(ctx), |app, ui| {
+    if modal(app, ctx, "android-file-browser", &title, dialog_w, |app, ui| {
         let t = app.tokens;
         // The location: where this listing is, and the way out of it.
         ui.horizontal(|ui| {
@@ -588,6 +813,11 @@ fn browser(app: &mut FilmcraftApp, ctx: &egui::Context, base: &Path, dir: PathBu
             }
         });
         ui.add_space(6.0);
+        // How the listing below is drawn; the buttons are the picker's own.
+        if let Some(v) = view_toolbar(app, ui, view) {
+            new_view = Some(v);
+        }
+        ui.add_space(6.0);
         if !listed {
             ui.label(RichText::new(tl!("This folder can't be read.")).size(13.0).color(t.text_dim));
             // In the shared root an unreadable listing is the grant that does not hold yet, not
@@ -598,11 +828,12 @@ fn browser(app: &mut FilmcraftApp, ctx: &egui::Context, base: &Path, dir: PathBu
             }
         } else if dirs.is_empty() && files.is_empty() {
             ui.label(RichText::new(tl!("Nothing here.")).size(13.0).color(t.text_dim));
-        } else {
-            egui::ScrollArea::vertical().id_salt("android-file-list").auto_shrink([false, false]).max_height(list_h).show(ui, |ui| {
-                for (i, d) in dirs.iter().enumerate() {
+        } else if view == PickView::List {
+            crate::widgets::finger_bar(ui);
+            crate::widgets::finger_scroll("android-file-list").auto_shrink([false, false]).max_height(list_h).show(ui, |ui| {
+                for d in &dirs {
                     let label = name_of(d);
-                    if row(app, ui, &t, &format!("dir.{i}"), &label, true, false) {
+                    if row(app, ui, &t, &format!("entry.{label}"), &label, true, false) {
                         enter = Some(d.clone());
                     }
                 }
@@ -610,7 +841,7 @@ fn browser(app: &mut FilmcraftApp, ctx: &egui::Context, base: &Path, dir: PathBu
                     let label = name_of(f);
                     // Where the folder is the answer, a file is context: tapping one must never
                     // answer a save (that would replace it without the overwrite prompt).
-                    let tapped = row(app, ui, &t, &format!("file.{i}"), &label, false, is_file && selected.contains(f));
+                    let tapped = row(app, ui, &t, &format!("entry.{label}"), &label, false, is_file && selected.contains(f));
                     if tapped && is_file {
                         if many {
                             toggle = Some(i);
@@ -620,6 +851,23 @@ fn browser(app: &mut FilmcraftApp, ctx: &egui::Context, base: &Path, dir: PathBu
                     }
                 }
             });
+        } else {
+            let mut items: Vec<TileItem> = dirs.iter().map(|d| TileItem { label: name_of(d), tile: Tile::Folder, selected: false }).collect();
+            items.extend(files.iter().map(|f| TileItem { label: name_of(f), tile: Tile::File(f.clone()), selected: is_file && selected.contains(f) }));
+            let size = vec2(ui.available_width(), list_h);
+            if let Some(i) = icon_grid(app, ui, ctx, &t, size, view, &items, "browser") {
+                if let Some(d) = dirs.get(i) {
+                    enter = Some(d.clone());
+                } else if let Some(fi) = i.checked_sub(dirs.len())
+                    && is_file
+                {
+                    if many {
+                        toggle = Some(fi);
+                    } else {
+                        pick = files.get(fi).cloned();
+                    }
+                }
+            }
         }
         if !is_file || many {
             ui.add_space(8.0);
@@ -652,7 +900,9 @@ fn browser(app: &mut FilmcraftApp, ctx: &egui::Context, base: &Path, dir: PathBu
         // exactly where it is: Android re-enters the app from its own settings page and the
         // grant is re-read every frame, so the listing opens up on its own — no callback, and
         // a device that cannot ask just says so instead of pretending.
-        if ask_grant || grant {
+        if let Some(v) = new_view {
+            remember_view(app, ctx, v);
+        } else if ask_grant || grant {
             if let Some(ask) = app.hooks.shared_storage_grant.as_ref() {
                 ask();
                 app.ui.status = tl!("Allow \"All files access\" for FilmCraft on the settings page, then tap Shared storage.").into();
@@ -807,7 +1057,7 @@ mod tests {
         assert!(app.native_dialog_open(), "the dialog is open until it is answered");
         frame(&mut app, &ctx);
         frame(&mut app, &ctx);
-        tap(&mut app, &ctx, "androidFile.file.0");
+        tap(&mut app, &ctx, "androidFile.entry.clip.mp4");
         let want = dir.join("clip.mp4").to_string_lossy().into_owned();
         assert_eq!(got.borrow().clone(), Some(vec![want]), "one file, chosen on the tap");
         assert!(!app.native_dialog_open(), "answered: the next dialog may open");
@@ -825,7 +1075,7 @@ mod tests {
         app.pick_ui(FileDialog::open_files(&["mp4"]), move |_, paths| *answer.borrow_mut() = Some(paths));
         frame(&mut app, &ctx);
         frame(&mut app, &ctx);
-        tap(&mut app, &ctx, "androidFile.file.0");
+        tap(&mut app, &ctx, "androidFile.entry.clip.mp4");
         assert_eq!(got.borrow().as_ref(), None, "nothing is answered before Choose");
         assert!(app.native_dialog_open());
         assert_eq!(app.file_dialogs.android_file.selected, vec![dir.join("clip.mp4")], "the tap checked it");
@@ -884,7 +1134,7 @@ mod tests {
         frame(&mut app, &ctx);
         frame(&mut app, &ctx);
         // enter the first folder, then choose it: the answer is the folder shown, not the root
-        tap(&mut app, &ctx, "androidFile.dir.0");
+        tap(&mut app, &ctx, "androidFile.entry.Projects");
         assert_eq!(app.file_dialogs.android_file.browser.as_deref(), Some(dir.join("Projects").as_path()), "the first folder is entered");
         tap(&mut app, &ctx, "androidFile.choose");
         let want = dir.join("Projects").to_string_lossy().into_owned();
@@ -917,7 +1167,7 @@ mod tests {
         app.pick_ui(FileDialog::Folder { at: None }, move |_, paths| *answer.borrow_mut() = Some(paths));
         frame(&mut app, &ctx);
         frame(&mut app, &ctx);
-        tap(&mut app, &ctx, "androidFile.file.0");
+        tap(&mut app, &ctx, "androidFile.entry.clip.mp4");
         assert!(got.borrow().is_none(), "the file is context, not an answer");
         assert!(app.file_dialogs.android_file.browser.is_some(), "the listing stays open");
         tap(&mut app, &ctx, "androidFile.choose");
@@ -939,7 +1189,7 @@ mod tests {
         frame(&mut app, &ctx);
         tap(&mut app, &ctx, "androidFile.browse");
         assert!(app.file_dialogs.android_file.browser.is_some(), "the browser is open");
-        tap(&mut app, &ctx, "androidFile.file.0");
+        tap(&mut app, &ctx, "androidFile.entry.Scene.fcproj");
         assert!(got.borrow().is_none(), "a tap on a file does not answer the save");
         assert!(app.file_dialogs.android_file.browser.is_some(), "the browser stays open");
         tap(&mut app, &ctx, "androidFile.choose");
@@ -957,7 +1207,7 @@ mod tests {
     fn without_a_storage_directory_nothing_is_served() {
         let mut draft = AndroidFileDraft::default();
         let hooks = HostHooks::default();
-        assert!(draft.serve(&hooks, &FileDialog::OpenProject).is_none());
+        assert!(draft.serve(&hooks, PickView::Large, &FileDialog::OpenProject).is_none());
         assert!(draft.request.is_none());
         assert!(!FileDialog::OpenProject.available(&hooks), "no host picker either: the command reports it");
     }
@@ -1176,8 +1426,8 @@ mod tests {
         frame(&mut app, &ctx);
         frame(&mut app, &ctx);
         tap(&mut app, &ctx, "androidFile.rootShared");
-        tap(&mut app, &ctx, "androidFile.dir.0"); // DCIM
-        tap(&mut app, &ctx, "androidFile.dir.0"); // DCIM/Cam
+        tap(&mut app, &ctx, "androidFile.entry.DCIM"); // DCIM
+        tap(&mut app, &ctx, "androidFile.entry.Cam"); // DCIM/Cam
         assert_eq!(app.file_dialogs.android_file.browser.as_deref(), Some(shared.join("DCIM/Cam").as_path()));
         tap(&mut app, &ctx, "androidFile.up");
         tap(&mut app, &ctx, "androidFile.up");
@@ -1204,7 +1454,7 @@ mod tests {
         tap(&mut app, &ctx, "androidFile.browse");
         tap(&mut app, &ctx, "androidFile.rootShared");
         assert_eq!(app.file_dialogs.android_file.browser.as_deref(), Some(shared.as_path()));
-        tap(&mut app, &ctx, "androidFile.dir.0"); // DCIM
+        tap(&mut app, &ctx, "androidFile.entry.DCIM"); // DCIM
         tap(&mut app, &ctx, "androidFile.choose");
         assert!(got.borrow().is_none(), "the browse does not answer the save");
         assert!(app.file_dialogs.android_file.browser.is_none(), "the prompt is back");
@@ -1237,5 +1487,79 @@ mod tests {
         assert!(asked.get(), "asking opens the settings page");
         assert_eq!(app.file_dialogs.android_file.browser.as_deref(), Some(missing.as_path()), "the listing stays put");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The stored view string parses to a view and back (anything unknown reads as the default),
+    /// each icon view knows its tile, and a narrow width still lays a grid out one tile per row.
+    #[test]
+    fn picker_views_parse_and_lay_out() {
+        for view in [PickView::List, PickView::Small, PickView::Medium, PickView::Large] {
+            assert_eq!(PickView::parse(view.as_str()), view, "a stored view round-trips");
+        }
+        assert_eq!(PickView::parse("huge"), PickView::Large, "an unknown view reads as the default");
+        assert_eq!(PickView::default(), PickView::Large, "the picker opens in large icons by default");
+        assert_eq!(PickView::Small.tile(), (84.0, 84.0, 14));
+        assert_eq!(PickView::Medium.tile(), (120.0, 112.0, 18));
+        assert_eq!(PickView::Large.tile(), (152.0, 136.0, 24));
+        assert_eq!(PickView::List.tile(), (0.0, 0.0, 0), "rows size themselves");
+        assert_eq!(grid_cols(4.0, 152.0), 1);
+        assert!(grid_cols(400.0, 0.0) > 0, "a zero tile is clamped, never divided by");
+        // the label an icon tile falls back to when it has no picture to show
+        assert_eq!(ext_label(Path::new("/x/Scene.fcproj")), "FCPROJ");
+        assert_eq!(ext_label(Path::new("/x/Clip.MP4")), "MP4");
+        assert_eq!(ext_label(Path::new("/x/README")), tl!("File"), "no extension: it is still a file");
+    }
+
+    /// The view buttons switch the listing between rows and icon grids and remember the choice at
+    /// `general.pickerView`; an entry keeps the same automation id in every view, so a tap lands
+    /// on the same file whichever one is shown.
+    #[test]
+    fn the_view_buttons_switch_the_listing_and_are_remembered() {
+        let dir = fixture("views");
+        let (mut app, ctx) = picker(&dir);
+        app.pick_ui(FileDialog::open_files(&["mp4"]), |_, _| {});
+        frame(&mut app, &ctx);
+        frame(&mut app, &ctx);
+        assert_eq!(app.file_dialogs.android_file.view, PickView::Large, "the default view is the large icons");
+        for mode in ["list", "small", "medium", "large"] {
+            assert!(element(&app, &format!("androidFile.view.{mode}")).is_some(), "the {mode} view button");
+        }
+        tap(&mut app, &ctx, "androidFile.view.list");
+        assert_eq!(app.file_dialogs.android_file.view, PickView::List, "switched to the rows");
+        assert_eq!(app.session.prefs.general.picker_view, "list", "and remembered");
+        // a row in the list view is the same entry as a tile in a grid view
+        tap(&mut app, &ctx, "androidFile.entry.clip.mp4");
+        assert_eq!(app.file_dialogs.android_file.selected, vec![dir.join("clip.mp4")], "the row checked it");
+        tap(&mut app, &ctx, "androidFile.view.small");
+        frame(&mut app, &ctx);
+        assert!(element(&app, "androidFile.entry.clip.mp4").is_some(), "the same entry is a tile in the grid");
+        tap(&mut app, &ctx, "androidFile.entry.clip.mp4");
+        assert!(app.file_dialogs.android_file.selected.is_empty(), "the tile tapped the same file and unchecked it");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The remembered view is what the *next* dialog opens in — the browser and the Open Project
+    /// list alike — and a project tile answers with the project file.
+    #[test]
+    fn the_next_dialog_opens_in_the_view_that_was_remembered() {
+        let dir = fixture("view-next");
+        let (mut app, ctx) = picker(&dir);
+        app.session.prefs.general.picker_view = "small".into();
+        app.pick_ui(FileDialog::Folder { at: None }, |_, _| {});
+        frame(&mut app, &ctx);
+        frame(&mut app, &ctx);
+        assert_eq!(app.file_dialogs.android_file.view, PickView::Small, "the stored view, not the default");
+        tap(&mut app, &ctx, "androidFile.cancel");
+        app.session.prefs.general.picker_view = "medium".into();
+        let got = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let answer = std::rc::Rc::clone(&got);
+        app.pick_ui(FileDialog::OpenProject, move |_, paths| *answer.borrow_mut() = Some(paths));
+        frame(&mut app, &ctx);
+        frame(&mut app, &ctx);
+        assert_eq!(app.file_dialogs.android_file.view, PickView::Medium, "the Open Project list takes the same view");
+        assert!(element(&app, "androidFile.entry.Scene.fcproj").is_some(), "the project is a tile");
+        tap(&mut app, &ctx, "androidFile.entry.Scene.fcproj");
+        assert_eq!(got.borrow().clone(), Some(vec![dir.join("Projects/Scene.fcproj").to_string_lossy().into_owned()]));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

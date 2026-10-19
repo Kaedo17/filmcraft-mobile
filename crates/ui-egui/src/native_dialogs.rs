@@ -135,7 +135,8 @@ impl FilmcraftApp {
         // The in-app browser: FilmCraft's own dialog for a host that offers storage but no system
         // picker (`app_files_dir`, the Android build). It answers on a channel, so the command
         // continues on a later frame exactly as with a host's non-blocking dialog.
-        if let Some(answer) = self.file_dialogs.android_file.serve(&self.hooks, &dialog) {
+        let view = crate::panels::android_file::stored_view(self);
+        if let Some(answer) = self.file_dialogs.android_file.serve(&self.hooks, view, &dialog) {
             self.native_dialog = Some(PendingDialog { answer, then: Box::new(then) });
             return Ok(json!({"dialog": "open"}));
         }
@@ -157,7 +158,8 @@ impl FilmcraftApp {
             return;
         }
         // The in-app browser first (see `pick`), then the host's dialogs.
-        let browser = self.file_dialogs.android_file.serve(&self.hooks, &dialog);
+        let view = crate::panels::android_file::stored_view(self);
+        let browser = self.file_dialogs.android_file.serve(&self.hooks, view, &dialog);
         let answer = match browser {
             Some(answer) => answer,
             None => match self.hooks.run_dialog.as_mut() {

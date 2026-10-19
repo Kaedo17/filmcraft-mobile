@@ -627,7 +627,7 @@ fn list(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, entries: &[Entry], c
 }
 
 /// A preview item for a file's thumbnail (files not in the project), or the project item.
-fn preview_item(
+pub(crate) fn preview_item(
     app: &mut FilmcraftApp,
     ctx: &egui::Context,
     e: &Entry,
@@ -719,7 +719,7 @@ fn thumbnails(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, entries: &[Ent
                     if resp.hovered() {
                         app.ui.media_browser.hover = Some((e.path.clone(), frac));
                     }
-                    let drawn = visible && draw_preview(app, ui, &ctx, e, tr, frac);
+                    let drawn = visible && draw_preview(app, ui.painter(), &ctx, e, tr, frac);
                     if !drawn {
                         let icon = match e.kind {
                             "audio" => Icon::Audio,
@@ -749,7 +749,7 @@ fn thumbnails(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, entries: &[Ent
     });
 }
 
-fn draw_preview(app: &mut FilmcraftApp, ui: &egui::Ui, ctx: &egui::Context, e: &Entry, r: Rect, frac: f32) -> bool {
+fn draw_preview(app: &mut FilmcraftApp, painter: &egui::Painter, ctx: &egui::Context, e: &Entry, r: Rect, frac: f32) -> bool {
     let Some((proj, id, dur, rate, src_w)) = preview_item(app, ctx, e) else { return false };
     let t = filmcraft_time::Tick((dur.0 as f64 * frac as f64) as i64);
     let frame = rate.frame_at(crate::panels::project::quantize(t));
@@ -766,11 +766,42 @@ fn draw_preview(app: &mut FilmcraftApp, ui: &egui::Ui, ctx: &egui::Context, e: &
     };
     match tex {
         Some((tid, sz)) => {
-            ui.painter().image(tid, crate::panels::monitor::fit(r, sz.x, sz.y), Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+            painter.image(tid, crate::panels::monitor::fit(r, sz.x, sz.y), Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
             true
         }
         None => false,
     }
+}
+
+/// A media file's thumbnail for a host that lists it outside the Media Browser (the in-app file
+/// picker's icon views): probe the path (at most `budget` new probes per frame, the caller
+/// repaints while the budget lasts), then draw the decoded picture letterboxed into `area` with
+/// this panel's preview pipeline. `false` when there is nothing to show yet — not media, not
+/// probed or not decoded — so the caller can draw an icon or an extension instead.
+pub(crate) fn file_thumbnail(
+    app: &mut FilmcraftApp,
+    ctx: &egui::Context,
+    painter: &egui::Painter,
+    path: &str,
+    name: &str,
+    area: Rect,
+    budget: &mut u32,
+) -> bool {
+    // Only video and images have a picture to decode; anything else costs a probe and shows
+    // nothing, so the caller draws its own icon or extension label instead.
+    let Some(kind) = mb::kind_of(name).filter(|k| matches!(*k, "video" | "image")) else { return false };
+    if !app.session.browser.probes.contains_key(path) {
+        if *budget == 0 {
+            return false;
+        }
+        *budget -= 1;
+        mb::probe(&mut app.session, path);
+        // A probe landed: draw what it found, and look for the next one on the next frame.
+        ctx.request_repaint();
+    }
+    // A synthetic entry: the picker lists paths, and the pipeline only reads name/path/kind.
+    let e = Entry { name: name.to_string(), path: path.to_string(), is_dir: false, kind, size: None, modified: None, numbered: false };
+    draw_preview(app, painter, ctx, &e, area, 0.3)
 }
 
 // ------------------------------------------------------------------------------------ menu, dialog
