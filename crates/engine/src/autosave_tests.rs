@@ -73,6 +73,22 @@ fn the_android_access_prompt_answer_round_trips() {
     assert!(reloaded.general.android_skip_all_files_access_prompt);
 }
 
+/// The in-app file picker's view (`general.pickerView`): a grid of large icons by default, set
+/// and reloaded on every platform, and repaired to the default when the stored value is not one
+/// of [`settings::PICKER_VIEWS`] (a hand-edited file must not break the picker).
+#[test]
+fn the_picker_view_round_trips_and_repairs() {
+    let mut s = Session::default();
+    assert_eq!(s.prefs.general.picker_view, "large", "icons big enough to see what a file is");
+    s.execute("prefs.set", json!({"key": "general.pickerView", "value": "small"})).unwrap();
+    assert_eq!(s.prefs.general.picker_view, "small");
+    let text = serde_json::to_string(&s.prefs).unwrap();
+    let reloaded: autosave::Preferences = serde_json::from_str(&text).unwrap();
+    assert_eq!(reloaded.general.picker_view, "small", "the choice survives a reload");
+    assert_eq!(autosave::Preferences::from_value(json!({"general": {"pickerView": "huge"}})).general.picker_view, "large", "unknown value repaired");
+    assert_eq!(autosave::Preferences::from_value(json!({"general": {"pickerView": "list"}})).general.picker_view, "list");
+}
+
 #[test]
 fn crash_recovery_end_to_end() {
     let d = temp_dir("recover");

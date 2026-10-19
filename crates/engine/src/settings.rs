@@ -61,6 +61,14 @@ pub struct GeneralPrefs {
     /// access button still asks on demand whatever this says. Only Android ever shows the prompt,
     /// so it has no row in the Preferences dialog; it loads, saves and round-trips on every host.
     pub android_skip_all_files_access_prompt: bool,
+    /// The in-app file picker's view ([`PICKER_VIEWS`]): one column of rows (`list`, the shape a
+    /// desktop's system picker has) or a grid of icons at one of three sizes, so what a file *is*
+    /// is visible before it is chosen. Persisted so the next dialog opens the way the last one was
+    /// left; an unknown value is repaired to `large` on load. Only a host that offers an app-private
+    /// files directory (Android) draws the picker, so like
+    /// [`Self::android_skip_all_files_access_prompt`] it has no row in the Preferences dialog and
+    /// simply round-trips everywhere.
+    pub picker_view: String,
     /// Most recently opened / saved projects (newest first; not shown in the dialog).
     pub recent_projects: Vec<String>,
 }
@@ -85,6 +93,7 @@ impl Default for GeneralPrefs {
             show_project_bin_in_tab: true,
             show_mask_tracker_preview: true,
             android_skip_all_files_access_prompt: false,
+            picker_view: "large".into(),
             recent_projects: Vec::new(),
         }
     }
@@ -927,6 +936,10 @@ pub const UI_SCALES: &[(&str, &str)] = &[
     ("250", "250%"),
     ("300", "300%"),
 ];
+/// The in-app file picker's views: one column of rows, or a grid of icons at one of three sizes
+/// (`general.pickerView`). Not part of the Preferences dialog (only an Android-shaped host draws
+/// the picker); an unknown stored value is repaired to `large`.
+pub const PICKER_VIEWS: &[(&str, &str)] = &[("list", "List"), ("small", "Small"), ("medium", "Medium"), ("large", "Large")];
 pub const DARK_THEMES: &[(&str, &str)] = &[("darkest", "Darkest"), ("dark", "Dark")];
 pub const LIGHT_THEMES: &[(&str, &str)] = &[("light", "Light")];
 const MIXDOWN: &[(&str, &str)] = &[("front", "Front Only"), ("frontRear", "Front + Rear"), ("frontLfe", "Front + LFE"), ("frontRearLfe", "Front + Rear + LFE")];
