@@ -376,7 +376,7 @@ fn toggle(app: &mut FilmcraftApp, path: &str, open: bool) {
 // ------------------------------------------------------------------------------------ entries
 
 /// Click / double-click / drag / context menu of an entry.
-fn entry_interactions(app: &mut FilmcraftApp, ui: &egui::Ui, resp: &egui::Response, e: &Entry, entries: &[Entry]) {
+fn entry_interactions(app: &mut FilmcraftApp, ui: &egui::Ui, resp: &egui::Response, e: &Entry, entries: &[Entry], area: egui::Id) {
     let ctx = ui.ctx().clone();
     if resp.clicked() {
         let mods = crate::panels::project_views::click_modifiers(ui);
@@ -405,6 +405,14 @@ fn entry_interactions(app: &mut FilmcraftApp, ui: &egui::Ui, resp: &egui::Respon
         } else {
             exec(app, &ctx, "mediaBrowser.openInSource", json!({"path": e.path}));
         }
+    }
+    // A finger press on the row is arbitrated: panning skips the row entirely, a hold grabs
+    // (one-frame Hold, then the re-armed Grab), and a mouse press grabs on drag_started as it
+    // always did. `area` is the enclosing view's scroll state (passed in by the two viewers).
+    match crate::widgets::touch_row(ui, resp, area) {
+        crate::widgets::TouchRow::Scroll => return,
+        crate::widgets::TouchRow::Hold | crate::widgets::TouchRow::Grab if !e.is_dir => start_file_drag(app, ui, e),
+        _ => {}
     }
     if resp.drag_started() && !e.is_dir {
         start_file_drag(app, ui, e);
@@ -564,7 +572,7 @@ fn list(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, entries: &[Entry], c
                 x += w;
             }
             app.auto.add(&format!("mediaBrowser.entry.{}", e.name), rr.intersect(ui.clip_rect()), &e.name);
-            entry_interactions(app, ui, &resp, e, entries);
+            entry_interactions(app, ui, &resp, e, entries, egui::Id::new("mb-list-scroll"));
         }
         let rest = ui.available_rect_before_wrap();
         let resp = ui.allocate_rect(Rect::from_min_size(rest.min, vec2(rest.width(), rest.height().max(30.0))), Sense::click());
@@ -710,7 +718,7 @@ fn thumbnails(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, entries: &[Ent
                     t.text,
                 );
                 app.auto.add(&format!("mediaBrowser.entry.{}", e.name), tr, &e.name);
-                entry_interactions(app, ui, &resp, e, entries);
+                entry_interactions(app, ui, &resp, e, entries, egui::Id::new("mb-thumb-scroll"));
             }
         }
     });
