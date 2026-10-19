@@ -917,6 +917,7 @@ const THEMES: &[(&str, &str)] = &[("darkest", "Darkest"), ("dark", "Dark"), ("li
 pub const APPEARANCE_MODES: &[(&str, &str)] = &[("auto", "Sync with system"), ("dark", "Dark"), ("light", "Light")];
 pub const UI_SCALES: &[(&str, &str)] = &[
     ("auto", "Auto (system)"),
+    ("50", "50%"),
     ("75", "75%"),
     ("100", "100%"),
     ("125", "125%"),
