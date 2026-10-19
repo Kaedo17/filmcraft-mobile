@@ -190,6 +190,49 @@ pub fn escape_closes(ctx: &egui::Context) -> bool {
     ctx.input(|i| i.key_pressed(egui::Key::Escape) && !i.pointer.any_down())
 }
 
+/// A menu body (drawn by `menus::menu_level`), bounded so a menu taller than the window scrolls
+/// instead of running off the screen — on a phone in landscape the Edit menu is about 42 rows
+/// against the 26 that fit, and everything from Select All to Preferences sits below the fold.
+///
+/// The drag is forced on ([`ScrollSource::ALL`]: `DragScroll::Always`) rather than left to egui's
+/// default `DragScroll::OnTouch`, which turns drag-to-scroll on only once
+/// `InputState::has_touch_screen` has seen an `Event::Touch`. A menu must scroll by dragging
+/// whatever pointer the user holds, and must not depend on that detection; the scroll bar and the
+/// wheel are untouched.
+///
+/// [`ScrollSource::ALL`]: egui::containers::scroll_area::ScrollSource::ALL
+pub fn menu_scroll<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
+    menu_scroll_area(ui).show(ui, add).inner
+}
+
+/// The area [`menu_scroll`] shows: from the popup's own top (this frame's cursor) to the bottom of
+/// the window, so a menu opened low on the screen is bounded by what is actually below it.
+fn menu_scroll_area(ui: &mut Ui) -> egui::ScrollArea {
+    let max_h = (ui.ctx().content_rect().bottom() - ui.cursor().min.y - 8.0).max(120.0);
+    egui::ScrollArea::vertical().max_height(max_h).scroll_source(egui::containers::scroll_area::ScrollSource::ALL)
+}
+
+/// A vertical scroll area a finger scrolls by construction: its contents drag
+/// ([`ScrollSource::ALL`]) whatever egui has or has not detected about touch, like
+/// [`menu_scroll`]. Used where the picker's own bar is the scroll affordance (see
+/// [`finger_bar`]).
+///
+/// [`ScrollSource::ALL`]: egui::containers::scroll_area::ScrollSource::ALL
+pub fn finger_scroll(id_salt: impl std::hash::Hash + std::fmt::Debug) -> egui::ScrollArea {
+    egui::ScrollArea::vertical().id_salt(id_salt).scroll_source(egui::containers::scroll_area::ScrollSource::ALL)
+}
+
+/// The scroll bar a fingertip can land on: egui's default track is 6 pt, which a finger cannot
+/// hit. Call at the top of the scope that shows a [`finger_scroll`] area — the bar is reserved
+/// from the area's width, so nothing is drawn under it.
+pub fn finger_bar(ui: &mut Ui) {
+    let s = &mut ui.spacing_mut().scroll;
+    s.bar_width = 24.0;
+    s.bar_inner_margin = 2.0;
+    s.bar_outer_margin = 2.0;
+    s.floating = false;
+}
+
 /// Keep a dialog's `draft` as a mouse press begins; Escape while the button is held puts it back,
 /// so a dragged number, slider or color returns to its value (#580). Call before drawing the
 /// dialog's widgets, and close the dialog with [`escape_closes`] so the same Escape keeps it open.
@@ -417,5 +460,48 @@ mod tests {
         frame(vec![press(to, false)]);
         let end = frame(Vec::new());
         assert!((end.center() - (start.center() + egui::vec2(-200.0, -150.0))).length() < 2.0, "moved with the drag: {start:?} -> {end:?}");
+    }
+
+    /// #269: a menu taller than the window has to be scrollable, and the Edit menu on a phone in
+    /// landscape is exactly that — about 42 rows against the 26 visible, so everything from Select
+    /// All down to Preferences sits below the fold. Dragging must scroll it whatever the host has
+    /// detected about touch, because egui's default `DragScroll::OnTouch` waits for an
+    /// `Event::Touch` that never arrives on the Android build.
+    #[test]
+    fn a_menu_taller_than_the_window_scrolls_by_drag() {
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 300.0));
+        let mut rows: Vec<f32> = Vec::new();
+        let frame = |events: Vec<egui::Event>, rows: &mut Vec<f32>| {
+            let input = egui::RawInput { screen_rect: Some(screen), events, ..Default::default() };
+            let mut out = ctx.run_ui(input, |ui| {
+                menu_scroll(ui, |ui| {
+                    rows.clear();
+                    for i in 0..42 {
+                        // A menu row spans the popup, so a finger anywhere on a row starts the drag.
+                        let r = ui.add_sized([ui.available_width(), 20.0], egui::Button::new(format!("row {i}")));
+                        rows.push(r.rect.min.y);
+                    }
+                });
+            });
+            out.textures_delta.clear();
+        };
+        frame(Vec::new(), &mut rows);
+        frame(Vec::new(), &mut rows);
+        // without scrolling the menu simply runs off the screen
+        let last = *rows.last().unwrap_or(&0.0);
+        assert!(last > screen.height(), "the test menu must overflow its window: last row at {last} pt of {} pt", screen.height());
+        // a press on a row, then a drag upward: the rows move, so the ones below the fold
+        // (Select All through Preferences) become reachable
+        let start = egui::pos2(120.0, 200.0);
+        let press = |p, pressed| egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
+        frame(vec![egui::Event::PointerMoved(start)], &mut rows);
+        frame(vec![press(start, true)], &mut rows);
+        for k in 1..=4 {
+            frame(vec![egui::Event::PointerMoved(start - egui::vec2(0.0, 25.0 * k as f32))], &mut rows);
+        }
+        let scrolled = *rows.last().unwrap_or(&0.0);
+        frame(vec![press(start - egui::vec2(0.0, 100.0), false)], &mut rows);
+        assert!(scrolled < last - 50.0, "the drag must scroll the menu: last row was at {last} pt, now {scrolled}");
     }
 }
