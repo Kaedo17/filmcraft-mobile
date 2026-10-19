@@ -1,6 +1,6 @@
 # Where FilmCraft falls short of Premiere Pro
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-19 · **Change:** minor (G21: the Android build's file picker gains list / icon-grid view modes, remembered at `general.pickerView`, thumbnails and finger scrolling; a 50% UI scale) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-19 · **Change:** minor (G21: the Android Media Browser and Project lists scroll by finger instead of moving the item, and a touch drop from them onto the Timeline lands) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 Every known shortfall, one entry each, ranked by what most stops an editor using FilmCraft for real
 work. This is the work list: agents should prefer it over adding checklist items. Numbers are in
@@ -321,6 +321,10 @@ platforms** G4, G9, G17, G21; **performance** G16; **ecosystem** G11; **measurem
   rows or as a grid of icons at three sizes (`List` / `Small` / `Medium` / `Large`, remembered at
   `general.pickerView`), showing a media file's decoded thumbnail; its lists and a menu taller than
   the window scroll by dragging any pointer, and Settings ▸ UI scale offers 50% for a small phone.
+  The Media Browser and the Project tab's lists and cards do too — a finger that moves before the
+  hold pans the list, a finger held past 0.55 s picks the row or card up, and a finger drag from
+  them onto the Timeline drops the file (a drop on the release frame reads the pointer's
+  `interact_pos`, which survives the `PointerGone` egui-winit sends beside the emulated mouse-up).
   What it still lacks: no hardware decode or encode
   (`platform`'s FFI covers VideoToolbox, Media Foundation / Direct3D 11, VA-API and NVDEC / NVENC
   only), so the phone decodes and encodes in pure Rust; the grant has to be given by hand from
@@ -337,5 +341,6 @@ platforms** G4, G9, G17, G21; **performance** G16; **ecosystem** G11; **measurem
 | 2026-10-12 | minor | G10: OpenEXR PXR24 import |
 | 2026-10-15 | minor | G21: the Android build is app-private only (the arm64 APK launches, saves and renders on a tablet; shared storage, hardware decode and store packaging remain) |
 | 2026-10-15 | minor | G21: shared storage on Android — the in-app browser's second root behind "All files access" (the grant is checked and opened over JNI, the entry crate's named `unsafe` exception); hardware codecs and store packaging remain, so the gap is retitled |
+| 2026-10-19 | minor | G21: the Android Media Browser and Project lists scroll by finger instead of moving the item (a hold picks it up), and a touch drop from them onto the Timeline lands (a release-frame drop reads `interact_pos`) |
 | 2026-10-19 | minor | G21: the Android file picker lists entries as rows or as a grid of icons at three sizes, remembered at `general.pickerView` (media files show the Media Browser's decoded thumbnail), its lists and a tall menu scroll by drag, and the UI scale gains 50%; verified on a TECNO KJ5 (Android 13) |
 | 2026-10-19 | minor | G21: the Android Media Browser offers only shared storage (no `/` or mounts, which an app cannot list) and a one-shot launch prompt asks for "All files access", "Not now" remembered; verified on a TECNO KJ5 (Android 13) |
