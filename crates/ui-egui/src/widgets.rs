@@ -239,44 +239,80 @@ pub fn finger_bar(ui: &mut Ui) {
 /// a still hold into a long-press click (context menu) after its own timeout — both steal the
 /// gesture from the scroll area the row sits in, so a finger that wanted to scroll the list picks
 /// the row up instead. The row calls [`touch_row`] with its own response and the id of its
-/// enclosing scroll area; one shared per-press state (there is one finger) settles which of the
-/// two the finger meant:
+/// enclosing scroll area; one shared per-press state (there is one finger) settles what the finger
+/// meant, once, for the rest of the press:
 ///
 /// - moving more than `MOVED` points before the hold expires → [`TouchRow::Scroll`]: the row must
 ///   not start its drag; the helper pans the scroll area with the finger. Only a *touch* press
 ///   registers — `InputState::any_touches` is a finger and nothing else — so a mouse press keeps
 ///   every existing instant-grab path unchanged.
-/// - holding `HOLD` seconds with no movement → [`TouchRow::Hold`], then [`TouchRow::Grab`] every
-///   later held frame: the row starts its drag on `Hold` and keeps it while `Grab`, re-arming its
-///   payload each frame because temp data is frame-scoped. `HOLD` is before egui's own
-///   long-press, so the row's context menu never opens from a touch.
+/// - holding `HOLD` seconds and then moving → [`TouchRow::Grab`]: the row starts its drag on that
+///   frame and keeps it while the finger is down. `HOLD` is shorter than egui's own long-press
+///   timeout, and the movement latches egui's "moved too much for a click", so the row's context
+///   menu never opens out of a drag.
+/// - holding `HOLD` seconds with the finger still → [`TouchRow::Hold`]: the row must not grab, and
+///   egui's own long-press opens the row's context menu as it always did. A move after the hold and
+///   before that long-press fires is the [`TouchRow::Grab`] above; a move after the menu has opened
+///   stays [`TouchRow::Hold`].
 /// - a quick release → [`TouchRow::Pressing`] until then; egui's click fires as usual.
 mod touch {
     /// The distance a finger may wobble before the press is no longer a click
     /// (matches egui's `max_click_dist`).
     pub(super) const MOVED: f32 = 6.0;
-    /// The hold that turns a still finger press into a grab, before egui's long-press (0.8 s).
+    /// The hold a finger keeps before a move becomes a drag instead of a scroll. Before egui's
+    /// own long-press timeout (0.8 s), so holding and then dragging beats the context menu.
     pub(super) const HOLD: f64 = 0.55;
 }
 use touch::{HOLD, MOVED};
 
-/// Which scroll area a finger press started in and where: temp data, gone after the lift. The
-/// area id is only the gesture's identity (the separate `grabbed` flag hangs off it), pan happens
-/// through `scroll_with_delta`, which needs no state id.
+/// What a finger's press turned out to mean. Latched for the rest of the press, so a scroll never
+/// turns back into a grab because the finger later travelled past the hold.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum TouchKind {
+    /// Not settled yet: still a candidate for a click, a scroll, the menu and a drag.
+    Undecided,
+    /// The finger moved before the hold expired: the enclosing list is scrolling.
+    Scroll,
+    /// The hold expired with the finger still: egui's long-press is on the press. A move before it
+    /// opens the row's menu turns the hold into the row's drag, a move after it does not.
+    Held,
+    /// The hold expired and the finger then moved: the row's drag.
+    Grab,
+}
+
+/// Which scroll area a finger press started in and where: temp data, gone after the lift. The area
+/// id is the gesture's identity (and gates the pan: one finger pans one area).
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct TouchPress {
-    /// Saved-state id of the enclosing scroll area (its `id_salt`), as a gesture identity.
+    /// Saved-state id of the enclosing scroll area (its `id_salt`).
     area: egui::Id,
     /// Where the finger went down.
     origin: egui::Pos2,
+    /// What the finger meant.
+    kind: TouchKind,
+    /// Whether egui's long-press opened the row's context menu during this press: under an open
+    /// menu a finger moving on must not pick the row up.
+    menu: bool,
 }
 
 fn touch_press_id() -> egui::Id {
     egui::Id::new("filmcraft-touch-row-press")
 }
 
-fn grabbed_id(area: egui::Id) -> egui::Id {
-    area.with("touch-grabbed")
+/// The (pass, area) that already spent this pass's pan (see [`touch_row`]).
+fn touch_pan_id() -> egui::Id {
+    egui::Id::new("filmcraft-touch-row-pan")
+}
+
+/// Whether this pass has already spent the finger's pan on `area`. Every row of a scroll area
+/// consults [`touch_row`], and `Ui::scroll_with_delta_animation` *accumulates* — one pan per pass,
+/// not one per row.
+fn panned_this_pass(ctx: &egui::Context, pass: u64, area: egui::Id) -> bool {
+    if ctx.data(|d| d.get_temp::<(u64, egui::Id)>(touch_pan_id())) == Some((pass, area)) {
+        return true;
+    }
+    ctx.data_mut(|d| d.insert_temp(touch_pan_id(), (pass, area)));
+    false
 }
 
 /// What the arbiter says this frame about a row's press (see [`touch_row`]).
@@ -288,9 +324,11 @@ pub enum TouchRow {
     Pressing,
     /// The finger moved before the hold expired: the row must not grab; the list is scrolling.
     Scroll,
-    /// The hold expired while still: this exact frame is the row's signal to grab.
+    /// The hold expired with the finger still: the row must not grab; egui's own long-press
+    /// opens the row's context menu.
     Hold,
-    /// A grabbed press, still held: the row keeps its drag while the finger is down.
+    /// The finger held and then moved: the row grabs now and keeps its drag while the finger is
+    /// down.
     Grab,
 }
 
@@ -315,11 +353,12 @@ pub fn touch_row(ui: &Ui, row: &Response, area: egui::Id) -> TouchRow {
             i.time,
         )
     });
+    let pass = ctx.cumulative_pass_nr();
     let press = ctx.data(|d| d.get_temp::<Option<TouchPress>>(touch_press_id())).flatten();
     let press = match press {
         Some(p) => Some(p),
         None if touch && pressed && origin.is_some_and(|o| row.rect.contains(o)) => {
-            let p = TouchPress { area, origin: origin.unwrap_or_else(|| row.rect.center()) };
+            let p = TouchPress { area, origin: origin.unwrap_or_else(|| row.rect.center()), kind: TouchKind::Undecided, menu: false };
             ctx.data_mut(|d| d.insert_temp(touch_press_id(), Some(p)));
             Some(p)
         }
@@ -330,10 +369,7 @@ pub fn touch_row(ui: &Ui, row: &Response, area: egui::Id) -> TouchRow {
     if !down {
         // The finger lifted this frame (egui keeps interact_pos through a touch release, and the
         // click answers from the row's own response): the arbitration is over.
-        ctx.data_mut(|d| {
-            d.remove::<Option<TouchPress>>(touch_press_id());
-            d.remove::<bool>(grabbed_id(press.area));
-        });
+        ctx.data_mut(|d| d.remove::<Option<TouchPress>>(touch_press_id()));
         return TouchRow::None;
     }
     if !touch {
@@ -345,29 +381,47 @@ pub fn touch_row(ui: &Ui, row: &Response, area: egui::Id) -> TouchRow {
         // A `PointerGone` while held (touch release is such a frame): keep waiting.
         return TouchRow::Pressing;
     };
-    // Once the hold picked the row up, the press belongs to the drag: dragging leaves the origin,
-    // and that movement must still answer `Grab`, never fall back to a scroll.
-    let grabbed = ctx.data(|d| d.get_temp::<bool>(grabbed_id(press.area))).unwrap_or(false);
-    if !grabbed && press.origin.distance(pos) > MOVED {
-        // A scrolling finger: hand this frame's pointer delta to the enclosing scroll area
+    // Settle the press once: the finger decides what it meant by moving, and only *when* it moved
+    // against the hold says which — early is a scroll, after the hold is the row's drag. A finger
+    // that never moves leaves the press to egui, whose long-press opens the row's context menu; a
+    // move after that menu opened must not pick the row up under it.
+    let held = press_start.is_some_and(|t| time - t > HOLD);
+    let moved = press.origin.distance(pos) > MOVED;
+    let menu = row.long_touched() || press.menu;
+    let kind = match press.kind {
+        TouchKind::Undecided if moved => {
+            if held {
+                TouchKind::Grab
+            } else {
+                TouchKind::Scroll
+            }
+        }
+        TouchKind::Undecided if held => TouchKind::Held,
+        TouchKind::Held if moved && !menu => TouchKind::Grab,
+        settled => settled,
+    };
+    if kind != press.kind || menu != press.menu {
+        let settled = TouchPress { kind, menu, ..press };
+        ctx.data_mut(|d| d.insert_temp(touch_press_id(), Some(settled)));
+    }
+    if kind == TouchKind::Scroll {
+        // A scrolling finger: hand this pass's pointer delta to the enclosing scroll area
         // (`scroll_with_delta` feeds the same pass_state the area consumes at its end, so the
         // write cannot be clobbered the way a direct `State::store` mid-pass is), instantly —
         // the drag *is* the animation. The content follows the finger: a finger moving up
         // (negative delta.y, pressing the pointer down on the content) scrolls *down* (the
         // offset grows), which `scroll_delta`'s inverted accounting produces from the same sign.
-        if delta != egui::Vec2::ZERO {
+        // Only the area the press began in pans, and only once per pass: every row of the area
+        // asks, and the delta accumulates.
+        if press.area == area && delta != egui::Vec2::ZERO && !panned_this_pass(&ctx, pass, area) {
             ui.scroll_with_delta_animation(delta, egui::style::ScrollAnimation::none());
         }
-        return TouchRow::Scroll;
     }
-    if grabbed {
-        // Re-arm the payload while held (the release frame must still see it).
-        TouchRow::Grab
-    } else if press_start.is_some_and(|t| time - t > HOLD) {
-        ctx.data_mut(|d| d.insert_temp(grabbed_id(press.area), true));
-        TouchRow::Hold
-    } else {
-        TouchRow::Pressing
+    match kind {
+        TouchKind::Scroll => TouchRow::Scroll,
+        TouchKind::Grab => TouchRow::Grab,
+        TouchKind::Held => TouchRow::Hold,
+        TouchKind::Undecided => TouchRow::Pressing,
     }
 }
 
@@ -541,10 +595,12 @@ mod touch_row_tests {
 
     /// An arbitered row inside a scrollable area, fed real Android-style touch input (an
     /// `Event::Touch` plus the emulated pointer events egui-winit sends): `answers` stacks the
-    /// answer row 7 got each frame, `offset_y` the area's saved offset after each frame.
+    /// answer row 7 got each frame, `offset_y` the area's saved offset after each frame. With
+    /// `all_rows` every row consults the arbiter, the way the real panels draw theirs.
     struct Bench {
         answers: Vec<TouchRow>,
         offset_y: Vec<f32>,
+        all_rows: bool,
     }
 
     fn touch_frame(b: &mut Bench, ctx: &egui::Context, events: Vec<egui::Event>, at: f64) {
@@ -556,8 +612,11 @@ mod touch_row_tests {
             let out = egui::ScrollArea::vertical().id_salt(area).auto_shrink([false, false]).show(ui, |ui| {
                 for i in 0..20 {
                     let r = ui.add_sized([ui.available_width(), 18.0], egui::Button::new(format!("row {i}")));
-                    if i == 7 {
-                        b.answers.push(crate::widgets::touch_row(ui, &r, area));
+                    if i == 7 || b.all_rows {
+                        let answer = crate::widgets::touch_row(ui, &r, area);
+                        if i == 7 {
+                            b.answers.push(answer);
+                        }
                     }
                 }
             });
@@ -572,11 +631,14 @@ mod touch_row_tests {
     #[test]
     fn an_early_finger_move_scrolls_and_does_not_grab() {
         let ctx = egui::Context::default();
-        let mut b = Bench { answers: Vec::new(), offset_y: Vec::new() };
+        let mut b = Bench { answers: Vec::new(), offset_y: Vec::new(), all_rows: false };
         let at = egui::pos2(120.0, 150.0);
         let touch = |phase, pos| egui::Event::Touch { device_id: egui::TouchDeviceId(1), id: egui::TouchId(1), phase, pos, force: Some(0.5) };
         let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
         // press (touch Start + emulated button), then moves, then the lift (Ended + PointerGone)
+        // a warm-up pass, as the app has run many frames before a finger lands: egui hit-tests the
+        // press against the previous pass's widgets, and with none it has no click candidate
+        touch_frame(&mut b, &ctx, vec![], -0.1);
         touch_frame(&mut b, &ctx, vec![touch(egui::TouchPhase::Start, at), egui::Event::PointerMoved(at), button(at, true)], 0.0);
         assert_eq!(b.answers.last(), Some(&TouchRow::Pressing), "a wait at first: {:?}", b.answers);
         for k in 1..=5 {
@@ -591,33 +653,97 @@ mod touch_row_tests {
         assert!(*b.offset_y.last().unwrap() > 20.0, "the area really panned: {:?}", b.offset_y);
     }
 
-    /// A finger held on row 7 without moving, then moved while still down: it is told `Hold` (the
-    /// frame to start the drag) and `Grab` from then on, and the area's offset stays put.
+    /// A finger held on row 7 without moving is told `Hold` every frame and never grabs: the row
+    /// leaves the press to egui, whose own long-press opens the row's context menu. Moving *after*
+    /// the hold turns it into `Grab` — the row's drag — and the area's offset stays put throughout.
     #[test]
-    fn a_held_finger_grabs_and_moves_do_not_scroll_the_area() {
+    fn a_still_hold_is_left_to_the_long_press_and_only_a_move_after_it_grabs() {
         let ctx = egui::Context::default();
-        let mut b = Bench { answers: Vec::new(), offset_y: Vec::new() };
+        let mut b = Bench { answers: Vec::new(), offset_y: Vec::new(), all_rows: false };
         let at = egui::pos2(120.0, 150.0);
         let touch = |phase, pos| egui::Event::Touch { device_id: egui::TouchDeviceId(1), id: egui::TouchId(1), phase, pos, force: Some(0.5) };
         let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
+        // a warm-up pass, as the app has run many frames before a finger lands: egui hit-tests the
+        // press against the previous pass's widgets, and with none it has no click candidate
+        touch_frame(&mut b, &ctx, vec![], -0.1);
         touch_frame(&mut b, &ctx, vec![touch(egui::TouchPhase::Start, at), egui::Event::PointerMoved(at), button(at, true)], 0.0);
         // held frames past the hold (no events, frames must run on their own)
         for k in 1..=8 {
             touch_frame(&mut b, &ctx, vec![], 0.1 * k as f64);
         }
-        assert_eq!(b.answers.iter().filter(|a| **a == TouchRow::Hold).count(), 1, "exactly one Hold: {:?}", b.answers);
-        assert!(b.answers.contains(&TouchRow::Grab), "then Grab while held: {:?}", b.answers);
-        // moving while grabbed still answers Grab (never a scroll) and does not pan the area
+        assert!(b.answers.contains(&TouchRow::Hold), "the hold is reported: {:?}", b.answers);
+        assert!(!b.answers.contains(&TouchRow::Grab), "a still hold never grabs: {:?}", b.answers);
+        assert_eq!(*b.offset_y.last().unwrap_or(&0.0), 0.0, "a still hold does not pan the area");
+        // moving while still down, after the hold: the row's drag, and still no pan
         let p = egui::pos2(at.x, at.y - 30.0);
         touch_frame(&mut b, &ctx, vec![touch(egui::TouchPhase::Move, p), egui::Event::PointerMoved(p)], 1.0);
-        assert_eq!(b.answers.last(), Some(&TouchRow::Grab), "a held finger keeps its grab as it drags: {:?}", b.answers);
+        assert_eq!(b.answers.last(), Some(&TouchRow::Grab), "a move after the hold grabs: {:?}", b.answers);
         // the instant scroll lands a frame later (a zero-length animation); settle one frame so a
         // stray scroll would show, and check the area never moved
         touch_frame(&mut b, &ctx, vec![], 1.05);
-        assert_eq!(*b.offset_y.last().unwrap_or(&0.0), *b.offset_y.first().unwrap_or(&0.0), "a grabbed press does not pan the area");
+        assert_eq!(*b.offset_y.last().unwrap_or(&0.0), 0.0, "a grabbed press does not pan the area");
+        // and it stays grabbed for the rest of the press, however far the finger travels
+        let q = egui::pos2(at.x, at.y - 60.0);
+        touch_frame(&mut b, &ctx, vec![touch(egui::TouchPhase::Move, q), egui::Event::PointerMoved(q)], 1.1);
+        assert_eq!(b.answers.last(), Some(&TouchRow::Grab), "a held finger keeps its grab: {:?}", b.answers);
+        touch_frame(&mut b, &ctx, vec![], 1.15);
+        assert_eq!(*b.offset_y.last().unwrap_or(&0.0), 0.0, "a grabbed press does not pan the area");
         // lift: the answers end and nothing grabs afterwards
-        touch_frame(&mut b, &ctx, vec![touch(egui::TouchPhase::End, p), button(p, false), egui::Event::PointerGone], 1.1);
+        touch_frame(&mut b, &ctx, vec![touch(egui::TouchPhase::End, q), button(q, false), egui::Event::PointerGone], 1.2);
         assert_eq!(b.answers.last(), Some(&TouchRow::None));
+    }
+
+    /// egui's own long-press opens the row's context menu once the finger has been still past its
+    /// own timeout; a finger that then moves must not pick the row up underneath the open menu.
+    #[test]
+    fn a_move_under_the_long_press_menu_does_not_grab() {
+        let ctx = egui::Context::default();
+        let mut b = Bench { answers: Vec::new(), offset_y: Vec::new(), all_rows: false };
+        let at = egui::pos2(120.0, 150.0);
+        let touch = |phase, pos| egui::Event::Touch { device_id: egui::TouchDeviceId(1), id: egui::TouchId(1), phase, pos, force: Some(0.5) };
+        let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
+        // a warm-up pass, as the app has run many frames before a finger lands: egui hit-tests the
+        // press against the previous pass's widgets, and with none it has no click candidate
+        touch_frame(&mut b, &ctx, vec![], -0.1);
+        touch_frame(&mut b, &ctx, vec![touch(egui::TouchPhase::Start, at), egui::Event::PointerMoved(at), button(at, true)], 0.0);
+        // still, past egui's long-press timeout (0.8 s): its "secondary click" now owns the press
+        for k in 1..=9 {
+            touch_frame(&mut b, &ctx, vec![], 0.1 * k as f64);
+        }
+        assert!(b.answers.contains(&TouchRow::Hold), "the still hold is reported: {:?}", b.answers);
+        // moving under the menu is not the row's drag
+        let p = egui::pos2(at.x, at.y - 30.0);
+        touch_frame(&mut b, &ctx, vec![touch(egui::TouchPhase::Move, p), egui::Event::PointerMoved(p)], 1.05);
+        assert_eq!(b.answers.last(), Some(&TouchRow::Hold), "under the menu the row does not grab: {:?}", b.answers);
+        touch_frame(&mut b, &ctx, vec![], 1.1);
+        assert_eq!(*b.offset_y.last().unwrap_or(&0.0), 0.0, "and it does not pan either");
+        touch_frame(&mut b, &ctx, vec![touch(egui::TouchPhase::End, p), button(p, false), egui::Event::PointerGone], 1.15);
+        assert_eq!(b.answers.last(), Some(&TouchRow::None));
+    }
+
+    /// Every row of a scroll area consults the arbiter — that is how the real panels draw them —
+    /// but one finger pans the area once per frame, never once per row.
+    #[test]
+    fn every_row_asking_still_pans_the_area_once() {
+        let ctx = egui::Context::default();
+        let mut b = Bench { answers: Vec::new(), offset_y: Vec::new(), all_rows: true };
+        let at = egui::pos2(120.0, 150.0);
+        let touch = |phase, pos| egui::Event::Touch { device_id: egui::TouchDeviceId(1), id: egui::TouchId(1), phase, pos, force: Some(0.5) };
+        let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
+        // a warm-up pass, as the app has run many frames before a finger lands: egui hit-tests the
+        // press against the previous pass's widgets, and with none it has no click candidate
+        touch_frame(&mut b, &ctx, vec![], -0.1);
+        touch_frame(&mut b, &ctx, vec![touch(egui::TouchPhase::Start, at), egui::Event::PointerMoved(at), button(at, true)], 0.0);
+        for k in 1..=5 {
+            let p = egui::pos2(at.x, at.y - 15.0 * k as f32);
+            touch_frame(&mut b, &ctx, vec![touch(egui::TouchPhase::Move, p), egui::Event::PointerMoved(p)], 0.1 * k as f64);
+        }
+        touch_frame(&mut b, &ctx, vec![], 0.6);
+        let moved = *b.offset_y.last().unwrap_or(&0.0);
+        // the finger travelled 75 px; twenty rows each adding their own copy would pin the area to
+        // its 160 px end instead.
+        assert!(moved > 20.0, "the area panned: {moved}");
+        assert!(moved < 100.0, "one pan per frame, not one per row: {moved}");
     }
 
     /// A mouse press on the same row is None every frame: the desktop's own drag path answers
@@ -625,7 +751,7 @@ mod touch_row_tests {
     #[test]
     fn a_mouse_press_is_not_arbitrated() {
         let ctx = egui::Context::default();
-        let mut b = Bench { answers: Vec::new(), offset_y: Vec::new() };
+        let mut b = Bench { answers: Vec::new(), offset_y: Vec::new(), all_rows: false };
         let at = egui::pos2(120.0, 150.0);
         let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
         touch_frame(&mut b, &ctx, vec![egui::Event::PointerMoved(at), button(at, true)], 0.0);
