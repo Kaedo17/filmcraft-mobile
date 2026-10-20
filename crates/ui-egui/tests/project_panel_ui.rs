@@ -1265,13 +1265,6 @@ fn a_finger_scroll_over_bin_cards_does_not_move_a_bin() {
     d.frames(6);
     let root = &d.app().session.project.root;
     let beta_bin = root.find_bin(filmcraft_project::BinId(beta)).expect("Beta is still in the project");
-    assert!(
-        beta_bin.children.iter().all(|e| !matches!(e, BinEntry::Bin(x) if x.id.0 == alpha)),
-        "a scrolling finger never nests the pressed bin in another"
-    );
-    assert!(
-        root.children.iter().any(|e| matches!(e, BinEntry::Bin(x) if x.id.0 == alpha)),
-        "Alpha stayed in the root; status: {}",
-        d.app().ui.status
-    );
+    assert!(beta_bin.children.iter().all(|e| !matches!(e, BinEntry::Bin(x) if x.id.0 == alpha)), "a scrolling finger never nests the pressed bin in another");
+    assert!(root.children.iter().any(|e| matches!(e, BinEntry::Bin(x) if x.id.0 == alpha)), "Alpha stayed in the root; status: {}", d.app().ui.status);
 }

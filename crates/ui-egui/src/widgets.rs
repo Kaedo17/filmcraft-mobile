@@ -643,11 +643,8 @@ mod touch_row_tests {
                 for i in 0..20 {
                     let r = ui.add_sized([ui.available_width(), 18.0], egui::Button::new(format!("row {i}")));
                     if i == 7 || b.all_rows {
-                        let answer = if i == 7 && b.horizontal {
-                            crate::widgets::touch_row_horizontal(ui, &r, area)
-                        } else {
-                            crate::widgets::touch_row(ui, &r, area)
-                        };
+                        let answer =
+                            if i == 7 && b.horizontal { crate::widgets::touch_row_horizontal(ui, &r, area) } else { crate::widgets::touch_row(ui, &r, area) };
                         if b.all_rows {
                             b.all.push((i, answer));
                         }
@@ -820,11 +817,7 @@ mod touch_row_tests {
         touch_frame(&mut b, &ctx, vec![touch(egui::TouchPhase::Move, p), egui::Event::PointerMoved(p)], 0.9);
         assert_eq!(b.answers.last(), Some(&TouchRow::Grab), "the pressed row grabs: {:?}", b.answers);
         assert!(b.all.iter().any(|(i, a)| *i == 7 && *a == TouchRow::Grab), "row 7 grabbed: {:?}", b.all);
-        assert!(
-            b.all.iter().all(|(i, a)| *i == 7 || *a == TouchRow::None),
-            "every other row must get None, never a verdict: {:?}",
-            b.all
-        );
+        assert!(b.all.iter().all(|(i, a)| *i == 7 || *a == TouchRow::None), "every other row must get None, never a verdict: {:?}", b.all);
     }
 
     /// A sideways drag on a control that moves sideways (a slider) is the control's own drag, not a
