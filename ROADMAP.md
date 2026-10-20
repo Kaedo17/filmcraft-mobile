@@ -5,7 +5,7 @@
 
 **Stage: alpha** · next: beta, ~19 points of ready-for-real-work and ~400–700 h away, plus opening Premiere's `.prproj` ([why](docs/target-app-parity.md#stage); passes the [core-workflow gate](docs/roadmap.md#alpha-gate))
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-19 · **Change:** minor (progress log: a finger scrolls FilmCraft's draggable lists instead of moving the item, a finger held on a row picks it up, and a touch drop from those panels onto the Timeline lands; `ui.drag` gains `touch: true`) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-19 · **Change:** minor (progress log: a finger scrolls FilmCraft's draggable lists instead of moving the item, a finger held on a row picks it up, and a touch drop from those panels onto the Timeline lands; `ui.drag` gains `touch: true`; language table: German covers the whole interface) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 Progress toward parity with Adobe Premiere Pro. This page is the summary; the detail is in
 [docs/target-app-parity.md](docs/target-app-parity.md) (assessment, methodology, calibration),
@@ -87,7 +87,7 @@ Premiere ships 10 interface languages. Measured from our catalogs (3,498 strings
 | Italian | partial (whole interface; native review welcome) | ~100% |
 | Korean | partial (whole interface; needs an installed Hangul font; native review welcome) | ~100% |
 | Japanese | partial (whole interface) | 99.7% |
-| German | menus only (native-reviewed) | 10.6% |
+| German | partial (whole interface; menus native-reviewed, the rest welcome) | ~100% |
 | Vietnamese | none | 0% |
 
 Also shipped: Ukrainian (menus only, 10%). Detail: [docs/localization-parity.md](docs/localization-parity.md).
@@ -174,6 +174,7 @@ Ranked; detail and "done when" in [docs/roadmap.md](docs/roadmap.md) and [docs/g
 | 2026-10-19 | minor | Progress log: the Android Media Browser offers shared storage only, behind a one-shot launch-time "All files access" ask; G21 updated (verified on a TECNO KJ5, Android 13) |
 | 2026-10-15 | minor | Progress log: the arm64 Android APK launches on a tablet; G21 added to gaps |
 | 2026-10-15 | minor | Progress log: the same Android entry now includes shared storage behind "All files access"; G21 retitled (hardware codecs and store packaging remain) |
+| 2026-10-13 | minor | Language table: German covers the whole interface (~100%) |
 | 2026-10-12 | trivial | Progress log: Transform shutter on adjustment layers (#1088) |
 | 2026-10-11 | minor | Language table: German ships the menus (#630, 10.6%) |
 | 2026-10-10 | minor | Readiness-by-audience table with hours to ~95% per audience |
