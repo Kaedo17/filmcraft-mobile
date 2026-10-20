@@ -1227,3 +1227,51 @@ fn media_browser_drag_drops_with_a_touch_release() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A finger scroll over the bin cards must not pick a bin up: the scroll frame is also the frame
+/// egui reports `drag_started`, so before the scroll arm returned, a lift over another card nested
+/// one bin inside the other.
+#[test]
+fn a_finger_scroll_over_bin_cards_does_not_move_a_bin() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace": "Editing"}));
+    d.ok("ui.panel.show", json!({"panel": "Project"}));
+    d.exec("project.view.set", json!({"view": "icon"}));
+    let alpha = d.exec("file.newBin", json!({"name": "Alpha"}))["bin"].as_u64().expect("Alpha's id");
+    let beta = d.exec("file.newBin", json!({"name": "Beta"}))["bin"].as_u64().expect("Beta's id");
+    d.frames(3);
+    let a = d.rect(&format!("project.bin.{alpha}"));
+    let b = d.rect(&format!("project.bin.{beta}"));
+    let from = egui::pos2(a[0] + a[2] / 2.0, a[1] + a[3] / 2.0);
+    let to = egui::pos2(b[0] + b[2] / 2.0, b[1] + b[3] / 2.0);
+    let mut send = |e: egui::Event| {
+        d.harness.input_mut().events.push(e);
+        d.frames(1);
+    };
+    let touch = |phase, pos| egui::Event::Touch { device_id: egui::TouchDeviceId(1), id: egui::TouchId(1), phase, pos, force: Some(0.5) };
+    let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
+    send(egui::Event::PointerMoved(from));
+    send(touch(egui::TouchPhase::Start, from));
+    send(button(from, true));
+    // a first move past the touch and drag thresholds, still on Alpha's card: the scroll latches
+    send(touch(egui::TouchPhase::Move, egui::pos2(from.x + 8.0, from.y)));
+    send(egui::Event::PointerMoved(egui::pos2(from.x + 8.0, from.y)));
+    // then across onto Beta's card, and lift
+    send(touch(egui::TouchPhase::Move, to));
+    send(egui::Event::PointerMoved(to));
+    send(touch(egui::TouchPhase::End, to));
+    send(button(to, false));
+    d.harness.input_mut().events.push(egui::Event::PointerGone);
+    d.frames(6);
+    let root = &d.app().session.project.root;
+    let beta_bin = root.find_bin(filmcraft_project::BinId(beta)).expect("Beta is still in the project");
+    assert!(
+        beta_bin.children.iter().all(|e| !matches!(e, BinEntry::Bin(x) if x.id.0 == alpha)),
+        "a scrolling finger never nests the pressed bin in another"
+    );
+    assert!(
+        root.children.iter().any(|e| matches!(e, BinEntry::Bin(x) if x.id.0 == alpha)),
+        "Alpha stayed in the root; status: {}",
+        d.app().ui.status
+    );
+}

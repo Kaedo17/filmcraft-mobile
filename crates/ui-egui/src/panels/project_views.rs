@@ -956,7 +956,7 @@ fn bin_card(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, b: &Bin, v: &Vie
     app.auto.add(&format!("{}.bin.{}", v.prefix, b.id.0), th, &b.name);
     accept_bin_drop(app, ui, th, b.id.0, actions);
     match crate::widgets::touch_row(ui, &resp, egui::Id::new((&v.prefix, "scroll"))) {
-        crate::widgets::TouchRow::Scroll => {}
+        crate::widgets::TouchRow::Scroll => return,
         crate::widgets::TouchRow::Grab => {
             if crate::panels::dragged_bin(ui).is_none() {
                 crate::panels::start_drag_bin(ui, b.id.0);
