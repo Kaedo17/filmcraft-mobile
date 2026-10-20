@@ -4,10 +4,11 @@
 //! app-private directory. To let a save, export, project or media import reach shared storage
 //! (`/storage/emulated/0`), the user must grant "All files access" — a special permission Android
 //! never grants silently: the app can only *check* whether it is held and *open the screen* where
-//! the user toggles it (Android 11+), or show the ordinary runtime permission dialog (Android 9/10,
-//! whose legacy `WRITE_EXTERNAL_STORAGE` still opens the whole shared tree). That is all this module
-//! does — it never reads or writes storage itself, so the browser's own root-clamping still keeps
-//! every answer inside the root the user is browsing.
+//! the user toggles it (Android 11+), or show the ordinary runtime permission dialog (Android 9,
+//! whose legacy `WRITE_EXTERNAL_STORAGE` still opens the whole shared tree; Android 10 targets
+//! scoped storage, so the dialog is shown there too but the shared tree stays unreachable). That
+//! is all this module does — it never reads or writes storage itself, so the browser's own
+//! root-clamping still keeps every answer inside the root the user is browsing.
 //!
 //! Every JNI call can fail (no JVM, an API level without the method, a device that refuses the
 //! intent) and every failure degrades to "not granted" / "nothing happened", logged at worst —
