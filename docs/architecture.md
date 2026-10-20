@@ -102,6 +102,28 @@ egui UI and the web app, so everything up to the engine stays web-portable and t
 ([web.md](web.md)). `unsafe_code = "forbid"` applies workspace-wide, except in `platform`
 (`deny`, allowed only on its FFI modules; [ADR 0001](adr/0001-platform-ffi.md)).
 
+### What a host with its own storage changes
+
+A host can tell the shared app where its files live instead of relying on the system picker; every
+other difference stays in the host, not in a `cfg` inside the panels:
+
+| Host | Behaviour |
+|---|---|
+| `HostHooks::app_files_dir` set | rfd has no backend there, so *every* file dialog — Save, Save As, Open Project, imports, exports, folder picks, relink — is served by [android_file.rs](../crates/ui-egui/src/panels/android_file.rs), FilmCraft's own browser. It opens on the frame the command asks, answers over the same channel a non-blocking host dialog uses (so the command continues on a later frame), and never leaves the root it is showing. It offers rows or an icon grid with thumbnails, remembers the choice at `general.pickerView`, and follows a finger: a drag scrolls the list, a still hold picks a row up. |
+| `HostHooks::shared_storage_root` set | the same browser gets a second root, entered only while `HostHooks::shared_storage_granted` reports that the host's access is held (re-read every frame, since the page that grants it backgrounds the app). Without it the switcher, or the `Grant access` button inside the unreadable root, calls `HostHooks::shared_storage_grant` instead of navigating. |
+| both unset (desktop, web) | the system picker as before (`rfd`, or the File System Access API in the browser), unchanged. |
+
+The browser's roots are just directories. A host that has an app-private data directory splits it
+once (`apps/filmcraft/src/android_storage.rs` in the Android build):
+
+```text
+<files>/Projects/   saves and projects (Save / Save As, the Open Project list)
+<files>/Exports/    renders and stills: `Session.export_dir`, which `default_export_dir` consults
+                    first — `/` is the working directory on a phone, `HOME` and the temp dir are
+                    unset, so no other fallback lands somewhere writable
+<files>/config/     the data root: settings, auto-save, recovery, logs
+```
+
 ## 2. Time base
 
 All time is `filmcraft_time::Tick(i64)` at `TICKS_PER_SECOND = 254_016_000_000`.

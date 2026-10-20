@@ -159,6 +159,26 @@ sequence as tone-mapped SDR.
 Ctrl), `Ctrl` (macOS ⌃), `Alt`, `Shift`. The dialog (Edit ▸ Keyboard Shortcuts…, ⌥⌘K) uses ids
 `shortcuts.*` (`shortcuts.key.K`, `shortcuts.cell.<command>`, `shortcuts.ok`, …).
 
+**In-app file dialogs** (`crates/ui-egui/src/panels/android_file.rs`): a host that offers a storage
+directory instead of a system picker — the Android build — has no rfd dialog to open, so every file
+dialog is FilmCraft's own browser and `ui.click` drives it with `androidFile.*`: `up`,
+`rootApp` / `rootShared` (the switcher between the two roots: the app-private directory, and shared
+storage — which reads `Shared storage (grant access)` and calls the host's grant hook instead of
+navigating while "All files access" is not held), `grant` (inside the shared root while it cannot
+be read — it asks the host for the grant too), `newFolder` / `folderName` / `create`,
+`view.list` / `view.small` / `view.medium` / `view.large` (how the listing is drawn: one column of
+rows, or a grid of icons at that size — the choice is remembered at `general.pickerView`, so the next
+dialog opens the same way), `entry.<name>` (a folder, file or saved project, by its file name — the
+Open Project list and the browser share the id, and it is the same id in every view, so a tap lands on
+the same entry whether the listing is rows or icons), `choose` (a folder pick — including the save prompt's
+`browse`, which returns to the prompt with that folder instead of answering — or a multi-file pick
+after `entry.<name>` ticked its tiles), `save`, `browse`, `cancel`, `name` (the save prompt's file-name
+field) and `overwrite` — which appears only where saving would replace an existing file. A pick is answered
+exactly as a system dialog's would be: the command continues on the frame the id is clicked. The
+root a browser is clamped to is its own state now, so `up` stops at the top of the root it is in
+(shared storage included) and a switcher tap starts at the new root's top. A host with the system
+picker draws none of this, and a host with no shared-storage hook no switcher either.
+
 ## MCP
 `filmcraft-cli mcp` serves MCP on stdio: headless (in-process session; `--demo` / `--project p.fcproj`)
 or `--bridge 127.0.0.1:9876` to drive the running app. Tools: `command_list`, `command_run`,

@@ -1,5 +1,6 @@
-//! FilmCraft app library: the window, hooks and launch logic, so the desktop binary (`main.rs`) is
-//! a shim whose `main` calls [`run`], and another host can open the same app.
+//! FilmCraft app library: the window, hooks and launch logic shared by the desktop binary
+//! (`main.rs`, whose `main` calls [`run`]) and Android's NativeActivity entry point
+//! (`apps/filmcraft-android`, whose `android_main` calls [`run_android`]).
 //!
 //! Usage: `filmcraft [--control <port>] [--demo|--empty] [--recover|--no-recover] [--data-dir <dir>]
 //! [project.fcproj | media files…]`; `--help` prints the options, `--version` the version. An
@@ -25,9 +26,16 @@
 //! (`FILMCRAFT_DATA_DIR`, XDG, `HOME`): the app-private storage directory the activity hands us
 //! (`AndroidApp::internal_data_path`) is the data root, so logs, auto-save and recovery live
 //! there. rfd has no Android backend (it does not compile for the target), so the file hooks stay
-//! empty and the commands' dialogs are served by FilmCraft's own in-app browser instead.
+//! empty and the commands' dialogs are served by FilmCraft's own in-app browser instead: it
+//! browses that app-private storage always, and shared storage (`/storage/emulated/0`) too once
+//! the user grants "All files access" — checked and requested by the entry crate over JNI
+//! ([`SharedStorageAccess`], the `unsafe` AGENTS.md §0.3 confines to that crate's
+//! `android_access.rs`), which keeps this crate unsafe-free and receives plain closures.
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
+/// Android's app-private storage (`Projects/`, `Exports/`, `config/`): pure path logic, the
+/// layout `run_inner` picks the session's data root from and the browser's root comes from.
+mod android_storage;
 mod app_nap;
 mod appearance;
 mod args;
@@ -86,28 +94,47 @@ fn tell(text: &str, error: bool) {
 }
 
 /// Open the window and run the app until its window closes. The desktop binary calls this from
-/// `main`; Android's NativeActivity entry point calls `run_android` from `android_main`.
+/// `main`; Android's NativeActivity entry point calls [`run_android`] from `android_main`.
 pub fn run() -> eframe::Result {
     #[cfg(target_os = "android")]
     {
-        run_inner(None)
+        run_inner(None, None)
     }
     #[cfg(not(target_os = "android"))]
     {
-        run_inner()
+        run_inner(None)
     }
 }
 
-/// Android entry point: like [`run`], but with the activity's handle, which eframe's event loop
-/// cannot be created without — leaving it out ends the activity as soon as it starts — and which
-/// resolves the app-private storage the session's logs, auto-save and settings live in.
-#[cfg(target_os = "android")]
-pub fn run_android(android_app: android_activity::AndroidApp) -> eframe::Result {
-    run_inner(Some(android_app))
+/// Android's "All files access" capabilities (`MANAGE_EXTERNAL_STORAGE`), built by the entry
+/// crate — which owns the JNI to the activity's JVM, since AGENTS.md §0.3 confines that `unsafe`
+/// to `apps/filmcraft-android/src/android_access.rs` — and handed to the in-app file browser as
+/// plain hooks: whether shared storage may be browsed right now, and how to ask for the grant.
+/// `None` when the entry crate could not reach the JVM (the browser then offers no shared root
+/// state at all and keeps its app-private one). Cloneable because the graphics retry loop in
+/// [`run_inner`] builds the app more than once; the closures behind it are shared, not repeated.
+#[derive(Clone)]
+pub struct SharedStorageAccess {
+    /// Whether the grant holds right now (re-checked whenever the browser shows the root).
+    pub granted: std::sync::Arc<dyn Fn() -> bool + Send + Sync>,
+    /// Ask for it: the system settings page on Android 11+, the permission dialog before that.
+    pub ask: std::sync::Arc<dyn Fn() + Send + Sync>,
 }
 
-/// Shared startup; `android_app` is the NativeActivity handle eframe needs on Android.
-fn run_inner(#[cfg(target_os = "android")] android_app: Option<android_activity::AndroidApp>) -> eframe::Result {
+/// Android entry point: like [`run`], but with the activity's handle, which eframe's event loop
+/// cannot be created without — leaving it out ends the activity as soon as it starts — which
+/// resolves the app-private storage the session's logs, auto-save and settings live in, and with
+/// the optional shared-storage capabilities [`SharedStorageAccess`] the entry crate resolved
+/// through JNI.
+#[cfg(target_os = "android")]
+pub fn run_android(android_app: android_activity::AndroidApp, access: Option<SharedStorageAccess>) -> eframe::Result {
+    run_inner(Some(android_app), access)
+}
+
+/// Shared startup; `android_app` is the NativeActivity handle eframe needs on Android,
+/// `access` the shared-storage grant the entry crate resolved there (`None` everywhere else and
+/// whenever the JVM was unreachable).
+fn run_inner(#[cfg(target_os = "android")] android_app: Option<android_activity::AndroidApp>, access: Option<SharedStorageAccess>) -> eframe::Result {
     // First, so the panic hook and every start-up record are logged (`logging`).
     let logger = logging::install();
     // Android has no command line: the empty iterator is exactly the launch a phone starts with.
@@ -143,11 +170,28 @@ fn run_inner(#[cfg(target_os = "android")] android_app: Option<android_activity:
         dir
     });
     let data_root = launch.data_dir.clone().or_else(default_data_dir);
+    // Android has no per-user data folder to resolve (no HOME, no XDG there): the activity's
+    // app-private directory is split by `android_storage` into Projects/ (projects), Exports/
+    // (renders and stills) and config/ — this root, so settings, auto-save, recovery and logs
+    // live in `config/` with the two folders the in-app browser offers beside it.
     #[cfg(target_os = "android")]
-    let data_root = data_root.or_else(|| android_files.clone());
+    let data_root = data_root.or_else(|| {
+        let layout = android_storage::layout(android_files.as_deref()?);
+        if let Err(e) = android_storage::ensure(&layout) {
+            // keep going: each dialog and command reports its own error for a folder it lacks
+            log::warn!("android storage: {e}");
+        }
+        Some(layout.config)
+    });
     // The resolved root is what `app_creator` builds the session's auto-save and settings from,
     // so Android's app-private directory reaches them exactly like `--data-dir` does.
     launch.data_dir = data_root.clone();
+    // The layout the session and the browser work in: the split above on Android, and none
+    // anywhere else (their pickers point at the real filesystem, as before).
+    #[cfg(target_os = "android")]
+    let storage = android_files.as_deref().map(android_storage::layout);
+    #[cfg(not(target_os = "android"))]
+    let storage: Option<android_storage::Layout> = None;
     let log_dir = data_root.as_ref().map(|d| d.join(logging::LOG_DIR));
     log::info!("FilmCraft {} ({} {})", env!("CARGO_PKG_VERSION"), std::env::consts::OS, std::env::consts::ARCH);
     // The log file lives next to the crash logs; opened after the arguments, so `--help`,
@@ -192,7 +236,8 @@ fn run_inner(#[cfg(target_os = "android")] android_app: Option<android_activity:
         // Before eframe creates the wgpu instance (e.g. no OpenGL on Windows, see graphics.rs).
         graphics::apply(&mut options, graphics.mode(), backend_override);
         let app_created = Arc::new(AtomicBool::new(false));
-        let result = eframe::run_native("FilmCraft", options, app_creator(launch.clone(), graphics.clone(), Arc::clone(&app_created)));
+        let result =
+            eframe::run_native("FilmCraft", options, app_creator(launch.clone(), graphics.clone(), Arc::clone(&app_created), storage.clone(), access.clone()));
         let app_created = app_created.load(Ordering::Relaxed);
         match &result {
             // wgpu reported the failure (no adapter, device creation failed) before the app
@@ -248,7 +293,18 @@ fn native_options(agent: bool) -> eframe::NativeOptions {
 
 /// Creates the app once eframe has its window and graphics device; sets `created` when it runs,
 /// and confirms the graphics mode once two frames have painted.
-fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<AtomicBool>) -> eframe::AppCreator<'static> {
+/// `storage` is the Android layout (`run_inner` split the app-private directory there, `None`
+/// on the desktop): renders go to its `Exports/` folder and the in-app file browser reaches the
+/// whole of it from its root. `access` is Android's "All files access" grant (`None` on the
+/// desktop, and whenever the entry crate could not reach the JVM): with it the browser offers
+/// shared storage as a second root beside that one.
+fn app_creator(
+    launch: Launch,
+    graphics: graphics::GraphicsStart,
+    created: Arc<AtomicBool>,
+    storage: Option<android_storage::Layout>,
+    access: Option<SharedStorageAccess>,
+) -> eframe::AppCreator<'static> {
     let Launch { control_port, control_input_only, files, demo, startup_flag, recover, data_dir, graphics: _ } = launch;
     Box::new(move |cc| {
         created.store(true, Ordering::Relaxed);
@@ -273,6 +329,14 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
             if let Err(e) = session.start_autosave(cfg) {
                 log::warn!("auto-save and crash recovery unavailable: {e}");
             }
+        }
+        // Where renders land when the host named a folder for them (the Android build): `/` is
+        // the working directory on a phone, `HOME` is unset and there is no temp dir, so none of
+        // `default_export_dir`'s other fallbacks resolves somewhere writable.
+        if let Some(s) = storage.as_ref()
+            && session.export_dir.is_none()
+        {
+            session.export_dir = Some(s.exports.clone());
         }
         // voice-over recording reads the microphone through cpal
         session.voiceover.input = Some(Box::new(audio_in::CpalIn::new(&session.prefs.audio_hardware.device_class)));
@@ -397,6 +461,29 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
         {
             app.hooks.open_url = Some(Box::new(|_: &str| Err("no browser on Android (yet)".into())));
             app.hooks.open_path = Some(Box::new(|path: &str, _reveal: bool| Err(format!("FilmCraft can't open {path} on Android (yet)"))));
+        }
+        // FilmCraft's own file browser serves every dialog when the host offers its storage
+        // directory instead of a system picker (the Android build, which has no rfd backend):
+        // its root is the app-private directory below `Projects/` and `Exports/`, and it never
+        // answers with anything outside it. `None` here (the desktop and the web) keeps the
+        // system pickers above exactly as they are.
+        app.hooks.app_files_dir = storage.as_ref().map(|s| s.base.clone());
+        // Its second root is Android's shared internal storage: the path the switcher navigates
+        // to (only on Android), and the two closures that re-check the "All files access" grant
+        // on every visit and open the system page that grants it. Both closures come from the
+        // entry crate's JNI (`SharedStorageAccess`); `None` there — desktop, or no JVM — leaves
+        // the switcher undrawn and the browser on its app-private root alone.
+        app.hooks.shared_storage_root =
+            cfg!(target_os = "android").then(|| std::path::PathBuf::from(filmcraft_engine::media_browser::SHARED_ROOT.unwrap_or(android_storage::SHARED_ROOT)));
+        if let Some(a) = access.as_ref() {
+            let granted = std::sync::Arc::clone(&a.granted);
+            app.hooks.shared_storage_granted = Some(Box::new(move || granted()));
+            let ask = std::sync::Arc::clone(&a.ask);
+            app.hooks.shared_storage_grant = Some(Box::new(move || ask()));
+            // The launch-time ask for the grant is the frontend's own prompt
+            // (`ui_egui::panels::android_access`), offered once the first frames have rendered.
+            // It reads these two hooks, so every platform that can check and ask gets the same
+            // prompt without a host-side timer.
         }
         #[cfg(not(target_os = "android"))]
         {
