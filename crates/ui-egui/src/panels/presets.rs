@@ -42,12 +42,12 @@ pub fn folder_rows(app: &mut FilmcraftApp, ui: &mut egui::Ui, filter: &str) -> O
         let resp = resp.on_hover_text(tip);
         match crate::widgets::touch_row(ui, &resp, fx_scroll) {
             crate::widgets::TouchRow::Scroll => continue,
-            crate::widgets::TouchRow::Hold | crate::widgets::TouchRow::Grab => {
+            crate::widgets::TouchRow::Grab => {
                 if crate::panels::dragged_effect(ui).is_none() {
                     crate::panels::start_drag_effect(ui, &format!("preset:{}", p.name));
                 }
             }
-            crate::widgets::TouchRow::None | crate::widgets::TouchRow::Pressing => {}
+            crate::widgets::TouchRow::None | crate::widgets::TouchRow::Pressing | crate::widgets::TouchRow::Hold => {}
         }
         if resp.drag_started() {
             crate::panels::start_drag_effect(ui, &format!("preset:{}", p.name));

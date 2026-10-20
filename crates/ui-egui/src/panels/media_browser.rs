@@ -406,12 +406,13 @@ fn entry_interactions(app: &mut FilmcraftApp, ui: &egui::Ui, resp: &egui::Respon
             exec(app, &ctx, "mediaBrowser.openInSource", json!({"path": e.path}));
         }
     }
-    // A finger press on the row is arbitrated: panning skips the row entirely, a hold grabs
-    // (one-frame Hold, then the re-armed Grab), and a mouse press grabs on drag_started as it
-    // always did. `area` is the enclosing view's scroll state (passed in by the two viewers).
+    // A finger press on the row is arbitrated: panning skips the row entirely, a hold *then a move*
+    // grabs (Grab), a still hold is left to egui's own long-press (the row's context menu), and a
+    // mouse press grabs on drag_started as it always did. `area` is the enclosing view's scroll
+    // state (passed in by the two viewers).
     match crate::widgets::touch_row(ui, resp, area) {
         crate::widgets::TouchRow::Scroll => return,
-        crate::widgets::TouchRow::Hold | crate::widgets::TouchRow::Grab if !e.is_dir => start_file_drag(app, ui, e),
+        crate::widgets::TouchRow::Grab if !e.is_dir => start_file_drag(app, ui, e),
         _ => {}
     }
     if resp.drag_started() && !e.is_dir {

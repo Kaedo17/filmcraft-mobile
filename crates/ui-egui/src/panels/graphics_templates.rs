@@ -251,12 +251,12 @@ fn browse(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                         let resp = resp.on_hover_text(crate::i18n::t(&e.template.description));
                         match crate::widgets::touch_row(ui, &resp, egui::Id::new("gfx-browse-scroll")) {
                             crate::widgets::TouchRow::Scroll => {}
-                            crate::widgets::TouchRow::Hold | crate::widgets::TouchRow::Grab => {
+                            crate::widgets::TouchRow::Grab => {
                                 if crate::panels::dragged_template(ui).is_none() {
                                     crate::panels::start_drag_template(ui, &e.template.id, &e.template.name);
                                 }
                             }
-                            crate::widgets::TouchRow::None | crate::widgets::TouchRow::Pressing => {}
+                            crate::widgets::TouchRow::None | crate::widgets::TouchRow::Pressing | crate::widgets::TouchRow::Hold => {}
                         }
                         if resp.drag_started() {
                             crate::panels::start_drag_template(ui, &e.template.id, &e.template.name);
