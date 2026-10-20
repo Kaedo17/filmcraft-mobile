@@ -56,10 +56,11 @@ resources = "res"
 # so the manifest entry alone changes nothing until they do, and until then the browser keeps
 # its app-private root.
 #
-# Below API 30 the access module asks for the ordinary runtime storage grant instead. Android 9
-# (API 28) is pre-scoped-storage, so that grant opens the whole shared tree. Android 10 (API 29)
-# is not: this app targets 35, so scoped storage applies there and the shared tree is not
-# reachable (see `android_access.rs`); the browser stays in app storage on that one version.
+# Below API 30 the access module asks for the ordinary runtime storage grant on Android 9 only
+# (API 28), which is pre-scoped-storage, so that grant opens the whole shared tree. Android 10
+# (API 29) is not offered: this app targets 35, so scoped storage applies there and the shared
+# tree is not reachable (see `android_access.rs`); the browser stays in app storage on that one
+# version. The two permissions stay capped at API 29 because the platform drops them on 30+.
 uses_permission = [
     { name = "android.permission.MANAGE_EXTERNAL_STORAGE" },
     { name = "android.permission.READ_EXTERNAL_STORAGE", max_sdk_version = 29 },

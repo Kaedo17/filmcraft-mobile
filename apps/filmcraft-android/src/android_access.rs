@@ -5,10 +5,10 @@
 //! (`/storage/emulated/0`), the user must grant "All files access" — a special permission Android
 //! never grants silently: the app can only *check* whether it is held and *open the screen* where
 //! the user toggles it (Android 11+), or show the ordinary runtime permission dialog (Android 9,
-//! whose legacy `WRITE_EXTERNAL_STORAGE` still opens the whole shared tree; Android 10 targets
-//! scoped storage, so the dialog is shown there too but the shared tree stays unreachable). That
-//! is all this module does — it never reads or writes storage itself, so the browser's own
-//! root-clamping still keeps every answer inside the root the user is browsing.
+//! whose legacy `WRITE_EXTERNAL_STORAGE` still opens the whole shared tree). Android 10 targets
+//! scoped storage, where no grant opens the shared tree, so nothing is offered there. That is all
+//! this module does — it never reads or writes storage itself, so the browser's own root-clamping
+//! still keeps every answer inside the root the user is browsing.
 //!
 //! Every JNI call can fail (no JVM, an API level without the method, a device that refuses the
 //! intent) and every failure degrades to "not granted" / "nothing happened", logged at worst —
@@ -95,16 +95,20 @@ impl AndroidAccess {
     }
 
     /// Whether shared storage may be read and written right now: "All files access" on
-    /// Android 11+, the legacy storage permission on Android 9/10. `false` when unknown (the
-    /// browser then keeps its app-private root).
+    /// Android 11+, the legacy storage permission on Android 9. `false` on Android 10 (scoped
+    /// storage, no "All files access" page yet) and when unknown: the browser then keeps its
+    /// app-private root.
     pub fn shared_storage_granted(self) -> bool {
         match self.sdk() {
             // `Environment.isExternalStorageManager()` exists only on API 30+.
             Some(sdk) if sdk >= 30 => {
                 self.with_env(|env| env.call_static_method("android/os/Environment", "isExternalStorageManager", "()Z", &[])?.z()).unwrap_or(false)
             }
-            // Android 9/10: the legacy runtime permission, which still unlocks the whole tree.
-            Some(_) => self
+            // Android 9: the legacy runtime permission, which still unlocks the whole tree.
+            // Android 10 is not offered: this app targets 35, so scoped storage applies there and
+            // direct file paths to shared storage are unavailable (`requestLegacyExternalStorage`
+            // is ignored for such targets, and cargo-apk cannot declare it anyway).
+            Some(28) => self
                 .with_env(|env| -> jni::errors::Result<bool> {
                     let perm = env.new_string("android.permission.WRITE_EXTERNAL_STORAGE")?;
                     let act = self.activity();
@@ -112,14 +116,15 @@ impl AndroidAccess {
                     Ok(code == 0)
                 })
                 .unwrap_or(false),
-            None => false,
+            _ => false,
         }
     }
 
     /// Ask the user to grant it: Android 11+ opens this app's "All files access" settings page,
-    /// Android 9/10 shows the runtime permission dialog (the browser re-checks the grant on every
-    /// visit, so the answer needs no callback). Best effort: a device that refuses the intent or
-    /// an unreachable JVM just leaves the grant un-granted, logged.
+    /// Android 9 shows the runtime permission dialog (the browser re-checks the grant on every
+    /// visit, so the answer needs no callback). Nothing is askable on Android 10, where no grant
+    /// opens shared storage. Best effort: a device that refuses the intent or an unreachable JVM
+    /// just leaves the grant un-granted, logged.
     pub fn ask_shared_storage_grant(self) {
         let asked = match self.sdk() {
             Some(sdk) if sdk >= 30 => self.with_env(|env| -> jni::errors::Result<bool> {
@@ -136,7 +141,7 @@ impl AndroidAccess {
                 env.call_method(&act, "startActivity", "(Landroid/content/Intent;)V", &[JValue::Object(&intent)])?;
                 Self::started(env)
             }),
-            Some(_) => self.with_env(|env| -> jni::errors::Result<bool> {
+            Some(28) => self.with_env(|env| -> jni::errors::Result<bool> {
                 // The permission dialog: requestPermissions(new String[]{read, write}, 42).
                 let arr = env.new_object_array(2, "java/lang/String", &JObject::null())?;
                 let perms = ["android.permission.READ_EXTERNAL_STORAGE", "android.permission.WRITE_EXTERNAL_STORAGE"];
@@ -148,7 +153,7 @@ impl AndroidAccess {
                 env.call_method(&act, "requestPermissions", "([Ljava/lang/String;I)V", &[JValue::Object(&arr), JValue::Int(42)])?;
                 Self::started(env)
             }),
-            None => None,
+            _ => None,
         };
         if asked != Some(true) {
             log::warn!("android access: could not ask for shared-storage access (the browser keeps its app-private root)");
