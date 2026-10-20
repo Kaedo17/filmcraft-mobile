@@ -286,6 +286,9 @@ enum TouchKind {
 struct TouchPress {
     /// Saved-state id of the enclosing scroll area (its `id_salt`).
     area: egui::Id,
+    /// The row the finger went down on: only that row may act on the press (every other row of the
+    /// area asks too, and gets no verdict).
+    row: egui::Id,
     /// Where the finger went down.
     origin: egui::Pos2,
     /// What the finger meant.
@@ -339,6 +342,18 @@ pub enum TouchRow {
 /// stores its offset under. While the press is a scroll the helper pans that area with the
 /// pointer delta; the row only needs to skip starting its drag and its click.
 pub fn touch_row(ui: &Ui, row: &Response, area: egui::Id) -> TouchRow {
+    touch_row_impl(ui, row, area, false)
+}
+
+/// [`touch_row`] for a control that moves sideways (a horizontal slider): a mostly-horizontal
+/// finger move before the hold is the control's own drag, not a scroll, so the panel keeps
+/// handling the slider and the panel does not pan underneath it. A mostly-vertical move still
+/// scrolls the panel.
+pub fn touch_row_horizontal(ui: &Ui, row: &Response, area: egui::Id) -> TouchRow {
+    touch_row_impl(ui, row, area, true)
+}
+
+fn touch_row_impl(ui: &Ui, row: &Response, area: egui::Id, horizontal_control: bool) -> TouchRow {
     let ctx = ui.ctx().clone();
     // All reads up front (no nested `data`/`input` calls — those lock for write):
     let (touch, pressed, down, origin, press_start, pos, delta, time) = ctx.input(|i| {
@@ -358,7 +373,7 @@ pub fn touch_row(ui: &Ui, row: &Response, area: egui::Id) -> TouchRow {
     let press = match press {
         Some(p) => Some(p),
         None if touch && pressed && origin.is_some_and(|o| row.rect.contains(o)) => {
-            let p = TouchPress { area, origin: origin.unwrap_or_else(|| row.rect.center()), kind: TouchKind::Undecided, menu: false };
+            let p = TouchPress { area, row: row.id, origin: origin.unwrap_or_else(|| row.rect.center()), kind: TouchKind::Undecided, menu: false };
             ctx.data_mut(|d| d.insert_temp(touch_press_id(), Some(p)));
             Some(p)
         }
@@ -388,7 +403,12 @@ pub fn touch_row(ui: &Ui, row: &Response, area: egui::Id) -> TouchRow {
     let held = press_start.is_some_and(|t| time - t > HOLD);
     let moved = press.origin.distance(pos) > MOVED;
     let menu = row.long_touched() || press.menu;
+    // A control that moves sideways (a slider) owns a mostly-sideways move before the hold: the
+    // press stays unlatched, so it is never a scroll (the panel keeps handling the slider) and
+    // never pans the area underneath it.
+    let sideways = (pos.x - press.origin.x).abs() > (pos.y - press.origin.y).abs();
     let kind = match press.kind {
+        TouchKind::Undecided if moved && horizontal_control && sideways && !held => TouchKind::Undecided,
         TouchKind::Undecided if moved => {
             if held {
                 TouchKind::Grab
@@ -416,6 +436,12 @@ pub fn touch_row(ui: &Ui, row: &Response, area: egui::Id) -> TouchRow {
         if press.area == area && delta != egui::Vec2::ZERO && !panned_this_pass(&ctx, pass, area) {
             ui.scroll_with_delta_animation(delta, egui::style::ScrollAnimation::none());
         }
+    }
+    if press.row != row.id {
+        // Another row of the area: it adds no verdict. A hold-then-drag must grab only the row the
+        // finger went down on, never every visible row it passes. The pan above still runs here,
+        // so the area keeps following the finger even if the pressed row has scrolled out of view.
+        return TouchRow::None;
     }
     match kind {
         TouchKind::Scroll => TouchRow::Scroll,
@@ -599,8 +625,12 @@ mod touch_row_tests {
     /// `all_rows` every row consults the arbiter, the way the real panels draw theirs.
     struct Bench {
         answers: Vec<TouchRow>,
+        /// Every row's answer, when `all_rows`: `(row, answer)` per consulting row per frame.
+        all: Vec<(usize, TouchRow)>,
         offset_y: Vec<f32>,
         all_rows: bool,
+        /// Row 7 stands for a sideways control (a slider): it consults [`touch_row_horizontal`].
+        horizontal: bool,
     }
 
     fn touch_frame(b: &mut Bench, ctx: &egui::Context, events: Vec<egui::Event>, at: f64) {
@@ -613,7 +643,14 @@ mod touch_row_tests {
                 for i in 0..20 {
                     let r = ui.add_sized([ui.available_width(), 18.0], egui::Button::new(format!("row {i}")));
                     if i == 7 || b.all_rows {
-                        let answer = crate::widgets::touch_row(ui, &r, area);
+                        let answer = if i == 7 && b.horizontal {
+                            crate::widgets::touch_row_horizontal(ui, &r, area)
+                        } else {
+                            crate::widgets::touch_row(ui, &r, area)
+                        };
+                        if b.all_rows {
+                            b.all.push((i, answer));
+                        }
                         if i == 7 {
                             b.answers.push(answer);
                         }
@@ -631,7 +668,7 @@ mod touch_row_tests {
     #[test]
     fn an_early_finger_move_scrolls_and_does_not_grab() {
         let ctx = egui::Context::default();
-        let mut b = Bench { answers: Vec::new(), offset_y: Vec::new(), all_rows: false };
+        let mut b = Bench { answers: Vec::new(), all: Vec::new(), offset_y: Vec::new(), all_rows: false, horizontal: false };
         let at = egui::pos2(120.0, 150.0);
         let touch = |phase, pos| egui::Event::Touch { device_id: egui::TouchDeviceId(1), id: egui::TouchId(1), phase, pos, force: Some(0.5) };
         let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
@@ -659,7 +696,7 @@ mod touch_row_tests {
     #[test]
     fn a_still_hold_is_left_to_the_long_press_and_only_a_move_after_it_grabs() {
         let ctx = egui::Context::default();
-        let mut b = Bench { answers: Vec::new(), offset_y: Vec::new(), all_rows: false };
+        let mut b = Bench { answers: Vec::new(), all: Vec::new(), offset_y: Vec::new(), all_rows: false, horizontal: false };
         let at = egui::pos2(120.0, 150.0);
         let touch = |phase, pos| egui::Event::Touch { device_id: egui::TouchDeviceId(1), id: egui::TouchId(1), phase, pos, force: Some(0.5) };
         let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
@@ -698,7 +735,7 @@ mod touch_row_tests {
     #[test]
     fn a_move_under_the_long_press_menu_does_not_grab() {
         let ctx = egui::Context::default();
-        let mut b = Bench { answers: Vec::new(), offset_y: Vec::new(), all_rows: false };
+        let mut b = Bench { answers: Vec::new(), all: Vec::new(), offset_y: Vec::new(), all_rows: false, horizontal: false };
         let at = egui::pos2(120.0, 150.0);
         let touch = |phase, pos| egui::Event::Touch { device_id: egui::TouchDeviceId(1), id: egui::TouchId(1), phase, pos, force: Some(0.5) };
         let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
@@ -726,7 +763,7 @@ mod touch_row_tests {
     #[test]
     fn every_row_asking_still_pans_the_area_once() {
         let ctx = egui::Context::default();
-        let mut b = Bench { answers: Vec::new(), offset_y: Vec::new(), all_rows: true };
+        let mut b = Bench { answers: Vec::new(), all: Vec::new(), offset_y: Vec::new(), all_rows: true, horizontal: false };
         let at = egui::pos2(120.0, 150.0);
         let touch = |phase, pos| egui::Event::Touch { device_id: egui::TouchDeviceId(1), id: egui::TouchId(1), phase, pos, force: Some(0.5) };
         let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
@@ -751,7 +788,7 @@ mod touch_row_tests {
     #[test]
     fn a_mouse_press_is_not_arbitrated() {
         let ctx = egui::Context::default();
-        let mut b = Bench { answers: Vec::new(), offset_y: Vec::new(), all_rows: false };
+        let mut b = Bench { answers: Vec::new(), all: Vec::new(), offset_y: Vec::new(), all_rows: false, horizontal: false };
         let at = egui::pos2(120.0, 150.0);
         let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
         touch_frame(&mut b, &ctx, vec![egui::Event::PointerMoved(at), button(at, true)], 0.0);
@@ -761,6 +798,73 @@ mod touch_row_tests {
         touch_frame(&mut b, &ctx, vec![egui::Event::PointerMoved(p)], 0.7);
         touch_frame(&mut b, &ctx, vec![button(p, false)], 0.8);
         assert!(*b.offset_y.last().unwrap_or(&0.0) == 0.0, "the area never pans from a mouse drag here");
+    }
+
+    /// Only the row the finger went down on may act on the press. Every other row of the area gets
+    /// `None`: a hold-then-drag on one file must not import every visible file, and a scroll must
+    /// not move whatever bin card it passes over.
+    #[test]
+    fn only_the_row_the_finger_went_down_on_gets_the_verdict() {
+        let ctx = egui::Context::default();
+        let mut b = Bench { answers: Vec::new(), all: Vec::new(), offset_y: Vec::new(), all_rows: true, horizontal: false };
+        let at = egui::pos2(120.0, 150.0);
+        let touch = |phase, pos| egui::Event::Touch { device_id: egui::TouchDeviceId(1), id: egui::TouchId(1), phase, pos, force: Some(0.5) };
+        let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
+        touch_frame(&mut b, &ctx, vec![], -0.1);
+        touch_frame(&mut b, &ctx, vec![touch(egui::TouchPhase::Start, at), egui::Event::PointerMoved(at), button(at, true)], 0.0);
+        // held past the hold, then moved: the pressed row's drag
+        for k in 1..=8 {
+            touch_frame(&mut b, &ctx, vec![], 0.1 * k as f64);
+        }
+        let p = egui::pos2(at.x, at.y - 30.0);
+        touch_frame(&mut b, &ctx, vec![touch(egui::TouchPhase::Move, p), egui::Event::PointerMoved(p)], 0.9);
+        assert_eq!(b.answers.last(), Some(&TouchRow::Grab), "the pressed row grabs: {:?}", b.answers);
+        assert!(b.all.iter().any(|(i, a)| *i == 7 && *a == TouchRow::Grab), "row 7 grabbed: {:?}", b.all);
+        assert!(
+            b.all.iter().all(|(i, a)| *i == 7 || *a == TouchRow::None),
+            "every other row must get None, never a verdict: {:?}",
+            b.all
+        );
+    }
+
+    /// A sideways drag on a control that moves sideways (a slider) is the control's own drag, not a
+    /// scroll: the press settles as not-a-scroll, so the panel's slider branch runs and the area
+    /// never pans.
+    #[test]
+    fn a_sideways_finger_drag_is_a_control_not_a_scroll() {
+        let ctx = egui::Context::default();
+        let mut b = Bench { answers: Vec::new(), all: Vec::new(), offset_y: Vec::new(), all_rows: false, horizontal: true };
+        let at = egui::pos2(120.0, 150.0);
+        let touch = |phase, pos| egui::Event::Touch { device_id: egui::TouchDeviceId(1), id: egui::TouchId(1), phase, pos, force: Some(0.5) };
+        let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
+        touch_frame(&mut b, &ctx, vec![], -0.1);
+        touch_frame(&mut b, &ctx, vec![touch(egui::TouchPhase::Start, at), egui::Event::PointerMoved(at), button(at, true)], 0.0);
+        // sideways, before the hold: a slider drag, never a scroll
+        for k in 1..=4 {
+            let p = egui::pos2(at.x + 15.0 * k as f32, at.y);
+            touch_frame(&mut b, &ctx, vec![touch(egui::TouchPhase::Move, p), egui::Event::PointerMoved(p)], 0.1 * k as f64);
+        }
+        touch_frame(&mut b, &ctx, vec![], 0.5);
+        assert!(!b.answers.contains(&TouchRow::Scroll), "a sideways drag is not a scroll: {:?}", b.answers);
+        assert_eq!(*b.offset_y.last().unwrap_or(&0.0), 0.0, "and the area does not pan");
+    }
+
+    /// The same sideways move on an ordinary row is still a scroll: the hint marks the control,
+    /// it does not turn every list sideways.
+    #[test]
+    fn a_sideways_finger_drag_still_scrolls_an_ordinary_row() {
+        let ctx = egui::Context::default();
+        let mut b = Bench { answers: Vec::new(), all: Vec::new(), offset_y: Vec::new(), all_rows: false, horizontal: false };
+        let at = egui::pos2(120.0, 150.0);
+        let touch = |phase, pos| egui::Event::Touch { device_id: egui::TouchDeviceId(1), id: egui::TouchId(1), phase, pos, force: Some(0.5) };
+        let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
+        touch_frame(&mut b, &ctx, vec![], -0.1);
+        touch_frame(&mut b, &ctx, vec![touch(egui::TouchPhase::Start, at), egui::Event::PointerMoved(at), button(at, true)], 0.0);
+        for k in 1..=4 {
+            let p = egui::pos2(at.x + 15.0 * k as f32, at.y);
+            touch_frame(&mut b, &ctx, vec![touch(egui::TouchPhase::Move, p), egui::Event::PointerMoved(p)], 0.1 * k as f64);
+        }
+        assert!(b.answers.contains(&TouchRow::Scroll), "an ordinary row still scrolls: {:?}", b.answers);
     }
 }
 

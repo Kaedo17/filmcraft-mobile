@@ -270,7 +270,7 @@ fn lumetri_rows(app: &mut FilmcraftApp, ui: &mut egui::Ui, filter: &str) -> Opti
             app.auto.add(&format!("effects.lumetriPreset.{}", p.name), r, p.name);
             let resp = resp.on_hover_text(crate::i18n::t(p.description));
             match crate::widgets::touch_row(ui, &resp, fx_scroll()) {
-                crate::widgets::TouchRow::Scroll => return None,
+                crate::widgets::TouchRow::Scroll => continue,
                 crate::widgets::TouchRow::Grab => {
                     if crate::panels::dragged_effect(ui).is_none() {
                         crate::panels::start_drag_lumetri_preset(ui, p.name);
@@ -319,7 +319,7 @@ fn preset_grid(app: &mut FilmcraftApp, ui: &mut egui::Ui, area: Rect) -> Option<
         ui.painter().galley(pos2(cell.min.x + 4.0, pic.max.y + 2.0), label, t.text);
         app.auto.add(&format!("effects.presetGrid.{}", p.name), cell, p.name);
         match crate::widgets::touch_row(ui, &resp, fx_scroll()) {
-            crate::widgets::TouchRow::Scroll => break,
+            crate::widgets::TouchRow::Scroll => continue,
             crate::widgets::TouchRow::Grab => {
                 if crate::panels::dragged_effect(ui).is_none() {
                     crate::panels::start_drag_lumetri_preset(ui, p.name);
