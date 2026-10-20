@@ -56,7 +56,8 @@ pub fn sanitize_name(input: &str, fallback: &str) -> String {
 /// Project saves keep their extension: a name with `.fcproj` keeps it, anything else gains one
 /// (the desktop dialog appends it too, #293), so a typed name can't save an unopenable file.
 pub fn enforce_project_ext(name: &str) -> String {
-    if name.split('.').nth(1).is_some_and(|e| e.eq_ignore_ascii_case("fcproj")) { name.to_string() } else { format!("{name}.fcproj") }
+    let has = Path::new(name).extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("fcproj"));
+    if has { name.to_string() } else { format!("{name}.fcproj") }
 }
 
 /// The full save path for a save into `dir` answered with `name`.
@@ -312,9 +313,17 @@ impl AndroidFileDraft {
             FileDialog::Folder { at } => {
                 // A saved location inside *either* root is honored (a settings folder already
                 // picked in shared storage stays picked); anything else starts at the app-private
-                // base, as before.
+                // base, as before. A start inside shared storage also makes the browser *be* in
+                // the shared root, so "Up one level" stays there and the switcher shows it.
                 let shared = hooks.shared_storage_root.as_deref();
-                d.browser = Some(at.as_deref().map(Path::new).filter(|p| p.is_dir() && inside_root(p, &base, shared)).map(Path::to_path_buf).unwrap_or(base));
+                let start = at.as_deref().map(Path::new).filter(|p| p.is_dir() && inside_root(p, &base, shared)).map(Path::to_path_buf);
+                if let (Some(p), Some(s)) = (start.as_deref(), shared)
+                    && !p.starts_with(&base)
+                    && p.starts_with(s)
+                {
+                    d.root = Some(StorageRoot::Shared(s.to_path_buf()));
+                }
+                d.browser = Some(start.unwrap_or(base));
             }
         }
         *self = d;
@@ -1233,6 +1242,31 @@ mod tests {
         assert_eq!(enforce_project_ext("Scene.png"), "Scene.png.fcproj");
         // a dotted name that is not a project is not one either
         assert_eq!(enforce_project_ext("Copy.FCPRX"), "Copy.FCPRX.fcproj");
+        // the *last* extension decides, not the segment after the first dot
+        assert_eq!(enforce_project_ext("Scene.v2.fcproj"), "Scene.v2.fcproj");
+        assert_eq!(enforce_project_ext("Scene.fcproj.bak"), "Scene.fcproj.bak.fcproj");
+    }
+
+    /// A folder pick that starts inside shared storage keeps the shared root: "Up one level" must
+    /// not jump into the app-private tree, and the switcher must show the root the browser is in.
+    #[test]
+    fn a_folder_pick_inside_shared_storage_stays_in_the_shared_root() {
+        let base = std::env::temp_dir().join(format!("filmcraft-picker-root-{}", std::process::id()));
+        let shared = std::env::temp_dir().join(format!("filmcraft-picker-shared-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let _ = std::fs::remove_dir_all(&shared);
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::create_dir_all(shared.join("Movies")).unwrap();
+        let hooks = HostHooks { app_files_dir: Some(base.clone()), shared_storage_root: Some(shared.clone()), ..Default::default() };
+        let mut draft = AndroidFileDraft::default();
+
+        let at = Some(shared.join("Movies").to_string_lossy().into_owned());
+        assert!(draft.serve(&hooks, PickView::Large, &FileDialog::Folder { at }).is_some());
+        assert_eq!(draft.browser.as_deref(), Some(shared.join("Movies").as_path()), "the browser starts where the pick did");
+        assert_eq!(draft.root, Some(StorageRoot::Shared(shared.clone())), "and the shared root is the one it is in");
+
+        let _ = std::fs::remove_dir_all(&base);
+        let _ = std::fs::remove_dir_all(&shared);
     }
 
     #[test]
