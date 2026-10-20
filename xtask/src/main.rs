@@ -210,11 +210,13 @@ fn sidecar_for(asset: &str) -> String {
 /// The asset a sidecar belongs to, mirroring [`sidecar_for`]; `None` when `path` is not a sidecar.
 fn asset_for(path: &str) -> Option<String> {
     let stem = path.strip_suffix(".attribution")?;
-    if let Some((dir, leaf)) = stem.rsplit_once('/')
-        && stem.starts_with(ANDROID_RES)
-        && leaf.starts_with('.')
-    {
-        return Some(format!("{dir}/{}", &leaf[1..]));
+    if stem.starts_with(ANDROID_RES) {
+        // `aapt` refuses a second resource name per directory: inside the resource tree only the
+        // dot-prefixed spelling can exist, so a plain one names no asset (and fails validation
+        // instead of passing here and breaking `cargo apk build`).
+        let (dir, leaf) = stem.rsplit_once('/')?;
+        let asset_leaf = leaf.strip_prefix('.')?;
+        return Some(format!("{dir}/{asset_leaf}"));
     }
     Some(stem.to_string())
 }
@@ -597,6 +599,8 @@ mod tests {
         // resource tree would break `cargo apk build`. The exception has to stay exactly there.
         assert!(ANDROID_RES.ends_with("/res/"));
         assert_eq!(sidecar_for(&format!("{ANDROID_RES}mipmap-mdpi/ic_launcher.png")), format!("{ANDROID_RES}mipmap-mdpi/.ic_launcher.png.attribution"));
+        // the written-out spelling is not a sidecar there: `aapt` would see a second resource
+        assert_eq!(asset_for(&format!("{ANDROID_RES}mipmap-mdpi/ic_launcher.png.attribution")), None);
         for elsewhere in ["assets/app-icon/filmcraft.ico", "docs/brand/artcraft-logo.svg", "assets/fonts/Inter-Regular.ttf"] {
             assert!(!sidecar_for(elsewhere).contains("/."), "dot-prefixed sidecar leaked to {elsewhere}");
         }
