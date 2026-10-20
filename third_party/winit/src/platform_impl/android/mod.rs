@@ -555,7 +555,16 @@ impl<T: 'static> EventLoop<T> {
                 dispatch(WindowEvent::MouseInput { device_id, state, button });
             },
             MotionAction::Down | MotionAction::Up => {
-                // A mouse's primary button: Android reports it as an ordinary down/up.
+                // Android reports a mouse's primary button as an ordinary down/up, and a
+                // non-primary one (right, middle…) as a bare down/up *before* its
+                // ButtonPress/Release. Only a primary down/up is a left click: otherwise a right
+                // click would also select or scrub as a left one. Check `Down` only, since on
+                // `Up` the button state may already be cleared (and a release the app never saw
+                // pressed is harmless).
+                let primary = motion_event.button_state().primary() || motion_event.action_button() == Button::Primary;
+                if motion_event.action() == MotionAction::Down && !primary {
+                    return InputStatus::Handled;
+                }
                 if let Some(position) = position {
                     dispatch(WindowEvent::CursorMoved { device_id, position });
                 }
