@@ -1735,6 +1735,7 @@ version = "0.8.0"
 dependencies = [
  "android-activity",
  "filmcraft",
+ "jni 0.21.1",
  "log",
 ]
 
